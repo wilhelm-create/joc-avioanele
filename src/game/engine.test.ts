@@ -14,8 +14,10 @@ function testPlaneShape() {
   const cells = planeCells({ r: 2, c: 4 }, 0)
   assert(cells.length === PLANE_CELL_COUNT, 'plane has 10 cells')
   assert(cells[0].r === 2 && cells[0].c === 4, 'head at origin')
-  assert(isValidPlacement({ r: 0, c: 0 }, 0, new Set()) === false, 'out of bounds top-left')
-  assert(isValidPlacement({ r: 0, c: 4 }, 0, new Set()) === true, 'valid top center')
+  assert(isValidPlacement({ r: 0, c: 0 }, 0, new Set(), 10, false) === false, 'out of bounds top-left')
+  assert(isValidPlacement({ r: 0, c: 4 }, 0, new Set(), 10, false) === true, 'valid top center')
+  const long = planeCells({ r: 4, c: 4 }, 0, true)
+  assert(long.length === 12, 'long wings 12 cells')
   console.log('✓ plane shape')
 }
 

@@ -1,6 +1,11 @@
 import { GameEngine } from '../game/engine'
 import type { Coord, GameSnapshot, Orientation, PlayerId, ShotResult } from '../game/types'
-import { COLS, GRID, PLANES_PER_PLAYER } from '../game/types'
+import {
+  clampSettings,
+  DIFFICULTY_PRESETS,
+  type Difficulty,
+  type GameSettings,
+} from '../game/settings'
 import {
   buzz,
   glitterBurst,
@@ -396,9 +401,11 @@ async function joinRoomHttp(code: string) {
       const p2 = data.room.players.find((p) => p.role === 'p2')
       if (p1) engine.p1.name = p1.username
       if (p2) engine.p2.name = p2.username
+      if (data.room.settings) engine.applySettings(data.room.settings, true)
       engine.beginOnlinePlacement()
       uiPhase = 'placement'
     } else {
+      if (data.room.settings) engine.applySettings(data.room.settings, true)
       statusNote = t('roomReadyInvite')
       uiPhase = 'online-lobby'
     }
@@ -439,6 +446,7 @@ function handleServer(msg: ServerMessage) {
         const me = msg.room.players.find((p) => p.userId === currentUser!.id)
         if (me) myOnlineRole = me.role
       }
+      if (msg.room.settings) engine.applySettings(msg.room.settings, true)
       statusNote =
         msg.room.players.length < 2
           ? t('roomReadyInvite')
@@ -460,19 +468,31 @@ function handleServer(msg: ServerMessage) {
         const p2 = roomInfo.players.find((p) => p.role === 'p2')
         if (p1) engine.p1.name = p1.username
         if (p2) engine.p2.name = p2.username
+        if (roomInfo.settings) engine.applySettings(roomInfo.settings, true)
       }
       engine.beginOnlinePlacement()
       uiPhase = 'placement'
       saveActiveSession()
       paint()
       break
+    case 'settings':
+      if (msg.settings) {
+        engine.applySettings(msg.settings, true)
+        if (roomInfo) roomInfo = { ...roomInfo, settings: msg.settings }
+        if (msg.geometryChanged && (uiPhase === 'placement' || uiPhase === 'waiting-opponent')) {
+          // fleets cleared in engine.applySettings
+          uiPhase = 'placement'
+          statusNote = t('settingsChangedReset')
+        }
+        paint()
+      }
+      break
     case 'ready':
       roomInfo = msg.room
       statusNote = t('opponentFleetReady')
       if (engine.phase === 'placement') {
-        // stay on placement or waiting
         const me = myOnlineRole ?? 'p1'
-        if (engine.player(me).planes.length >= PLANES_PER_PLAYER) {
+        if (engine.player(me).planes.length >= engine.planesPerPlayer) {
           uiPhase = 'waiting-opponent'
         }
       }
@@ -499,7 +519,7 @@ function handleServer(msg: ServerMessage) {
         // Only try local battle start if we already confirmed our fleet
         if (
           myOnlineRole &&
-          engine.player(myOnlineRole).planes.length >= PLANES_PER_PLAYER &&
+          engine.player(myOnlineRole).planes.length >= engine.planesPerPlayer &&
           (uiPhase === 'waiting-opponent' || engine.phase !== 'placement')
         ) {
           engine.markOnlineReady(myOnlineRole)
@@ -1346,6 +1366,147 @@ async function startOnlineHost() {
   }
 }
 
+function publishMatchSettings(partial: Partial<GameSettings>) {
+  if (uiPhase === 'battle' || uiPhase === 'game-over') return
+  const next = clampSettings({ ...engine.settings, ...partial })
+  engine.applySettings(next)
+  if (roomInfo) roomInfo = { ...roomInfo, settings: next }
+  if (roomCode && socket.connected) {
+    socket.send({ type: 'settings', settings: next })
+  }
+  if (uiPhase === 'waiting-opponent') uiPhase = 'placement'
+  paint()
+}
+
+/** Match settings panel — same options as classic Avioanele config. */
+function gameSettingsPanel(): HTMLElement {
+  const s = engine.settings
+  const wrap = el('div', { className: 'card game-settings-panel' })
+  wrap.append(
+    el('h3', { text: t('matchSettings') }),
+    el('p', { className: 'hint', text: t('matchSettingsHint') }),
+  )
+
+  wrap.appendChild(el('div', { className: 'settings-label', text: t('difficulty') }))
+  const diffRow = el('div', { className: 'diff-grid' })
+  const diffs: { id: Difficulty; key: string }[] = [
+    { id: 'easy', key: 'diffEasy' },
+    { id: 'medium', key: 'diffMedium' },
+    { id: 'hard', key: 'diffHard' },
+    { id: 'impossible', key: 'diffImpossible' },
+  ]
+  for (const d of diffs) {
+    diffRow.appendChild(
+      el('button', {
+        type: 'button',
+        className: `diff-btn ${s.difficulty === d.id ? 'active' : ''}`,
+        text: t(d.key),
+        onClick: () => {
+          const preset = DIFFICULTY_PRESETS[d.id]
+          publishMatchSettings({ difficulty: d.id, ...preset })
+        },
+      }),
+    )
+  }
+  wrap.appendChild(diffRow)
+
+  const gridLabel = el('div', {
+    className: 'settings-label',
+    text: `${t('numCells')}: ${s.gridSize}×${s.gridSize}`,
+  })
+  const gridSlider = el('input', {
+    type: 'range',
+    min: '8',
+    max: '14',
+    step: '1',
+    value: String(s.gridSize),
+    className: 'settings-range',
+  }) as HTMLInputElement
+  gridSlider.value = String(s.gridSize)
+  gridSlider.addEventListener('input', () => {
+    gridLabel.textContent = `${t('numCells')}: ${gridSlider.value}×${gridSlider.value}`
+  })
+  gridSlider.addEventListener('change', () => {
+    publishMatchSettings({ gridSize: Number(gridSlider.value) })
+  })
+  wrap.append(gridLabel, gridSlider)
+
+  const planesLabel = el('div', {
+    className: 'settings-label',
+    text: `${t('numPlanes')}: ${s.planesPerPlayer}`,
+  })
+  const planesSlider = el('input', {
+    type: 'range',
+    min: '1',
+    max: '12',
+    step: '1',
+    value: String(s.planesPerPlayer),
+    className: 'settings-range',
+  }) as HTMLInputElement
+  planesSlider.value = String(s.planesPerPlayer)
+  planesSlider.addEventListener('input', () => {
+    planesLabel.textContent = `${t('numPlanes')}: ${planesSlider.value}`
+  })
+  planesSlider.addEventListener('change', () => {
+    publishMatchSettings({ planesPerPlayer: Number(planesSlider.value) })
+  })
+  wrap.append(planesLabel, planesSlider)
+
+  wrap.appendChild(
+    el('button', {
+      type: 'button',
+      className: `toggle-btn ${s.longWings ? 'active' : ''}`,
+      text: s.longWings ? `✓ ${t('longWings')}` : t('longWings'),
+      onClick: () => publishMatchSettings({ longWings: !engine.settings.longWings }),
+    }),
+  )
+
+  wrap.appendChild(el('div', { className: 'settings-label', text: t('planeColor') }))
+  const swatches = el('div', { className: 'color-swatches' })
+  const palette = [
+    '#e8956a',
+    '#c4785a',
+    '#5bb4e5',
+    '#e07a5f',
+    '#f2cc8f',
+    '#81b29a',
+    '#3d405b',
+    '#f4a261',
+    '#e76f51',
+    '#2a9d8f',
+    '#e9c46a',
+    '#9b5de5',
+    '#ff006e',
+    '#8338ec',
+    '#3a86ff',
+    '#fb5607',
+  ]
+  for (const hex of palette) {
+    swatches.appendChild(
+      el('button', {
+        type: 'button',
+        className: `swatch-btn ${s.planeColor.toLowerCase() === hex.toLowerCase() ? 'active' : ''}`,
+        style: `background:${hex}`,
+        title: hex,
+        'aria-label': hex,
+        onClick: () => publishMatchSettings({ planeColor: hex }),
+      }),
+    )
+  }
+  wrap.appendChild(swatches)
+  const colorInput = el('input', {
+    type: 'color',
+    value: s.planeColor,
+    className: 'color-picker',
+    'aria-label': t('planeColor'),
+  }) as HTMLInputElement
+  colorInput.value = s.planeColor
+  colorInput.addEventListener('change', () => publishMatchSettings({ planeColor: colorInput.value }))
+  wrap.appendChild(colorInput)
+
+  return wrap
+}
+
 function onlineLobbyScreen(): HTMLElement {
   const isHostLobby = Boolean(roomInfo && roomCode && myOnlineRole === 'p1')
   const isGuestWaiting = Boolean(roomInfo && roomCode && myOnlineRole === 'p2')
@@ -1525,10 +1686,15 @@ function onlineLobbyScreen(): HTMLElement {
     }),
   )
 
-  return el('div', { className: 'screen', 'data-screen': 'online-lobby' }, [
+  const children: HTMLElement[] = [
     el('h2', { text: isHostLobby ? t('lobbyInviteTitle') : t('lobbyJoinTitle') }),
     card,
-  ])
+  ]
+  // Host (and guest once in room) can edit match settings before the game
+  if (isHostLobby || isGuestWaiting) {
+    children.push(gameSettingsPanel())
+  }
+  return el('div', { className: 'screen', 'data-screen': 'online-lobby' }, children)
 }
 
 function waitingOpponentScreen(): HTMLElement {
@@ -1567,15 +1733,15 @@ function finishPlacementAndNotify(placeFor: PlayerId) {
 function placementScreen(): HTMLElement {
   const placeFor = myOnlineRole ?? engine.placingPlayer
   const p = engine.player(placeFor)
-  const fleetFull = p.planes.length >= PLANES_PER_PLAYER
-  const canPlaceMore = p.planes.length < PLANES_PER_PLAYER
+  const fleetFull = p.planes.length >= engine.planesPerPlayer
+  const canPlaceMore = p.planes.length < engine.planesPerPlayer
   // Ghost only while a free slot remains (never a “4th plane” preview)
-  const defaultGhost: Coord = { r: Math.floor(GRID / 2), c: Math.floor(GRID / 2) }
+  const defaultGhost: Coord = { r: Math.floor(engine.gridSize / 2), c: Math.floor(engine.gridSize / 2) }
   let stickyGhost: Coord | null = canPlaceMore ? (engine.ghostHead ?? defaultGhost) : null
   let boardApi: BoardApi | null = null
 
   const freeSlots = () =>
-    PLANES_PER_PLAYER - engine.player(placeFor).planes.length
+    engine.planesPerPlayer - engine.player(placeFor).planes.length
 
   const clearGhostVisual = () => {
     stickyGhost = null
@@ -1590,13 +1756,18 @@ function placementScreen(): HTMLElement {
   const screen = el('div', { className: 'screen', 'data-screen': 'placement' }, [
     el('div', { className: 'player-pill' }, [
       el('span', { className: 'dot', style: `background:${p.color}` }),
-      el('span', { text: `${p.name} — ${t('yourFleet')} ${p.planes.length}/${PLANES_PER_PLAYER}` }),
+      el('span', { text: `${p.name} — ${t('yourFleet')} ${p.planes.length}/${engine.planesPerPlayer}` }),
     ]),
     el('div', {
       className: fleetFull ? 'banner hit' : 'banner',
       text: bannerText,
     }),
   ])
+
+  // Both players can tweak match settings until battle starts
+  if (engine.mode !== 'local') {
+    screen.appendChild(gameSettingsPanel())
+  }
 
   boardApi = boardElement({
     mode: 'own',
@@ -1694,7 +1865,7 @@ function placementScreen(): HTMLElement {
         return
       }
       // Place if we still have free slots — never a 4th plane
-      if (engine.player(placeFor).planes.length >= PLANES_PER_PLAYER) {
+      if (engine.player(placeFor).planes.length >= engine.planesPerPlayer) {
         clearGhostVisual()
         buzz(20)
         return
@@ -1753,7 +1924,7 @@ function placementScreen(): HTMLElement {
     text: t('doneFleet'),
     disabled: !fleetFull,
     onClick: () => {
-      if (engine.player(placeFor).planes.length < PLANES_PER_PLAYER) {
+      if (engine.player(placeFor).planes.length < engine.planesPerPlayer) {
         buzz(30)
         return
       }
@@ -1798,7 +1969,7 @@ function placementScreen(): HTMLElement {
   )
 
   // Only show sticky ghost when a free slot remains (never a 4th plane outline)
-  if (engine.player(placeFor).planes.length < PLANES_PER_PLAYER && stickyGhost) {
+  if (engine.player(placeFor).planes.length < engine.planesPerPlayer && stickyGhost) {
     queueMicrotask(() => boardApi?.paintGhost(stickyGhost))
   }
 
@@ -2038,16 +2209,19 @@ function boardElement(opts: BoardOpts): BoardApi {
   const wrap = el('div', { className: 'board-wrap' })
   if (opts.title) wrap.appendChild(el('div', { className: 'board-title', text: opts.title }))
 
+  const gridN = engine.gridSize
+  const fleetColor = engine.settings.planeColor
   const board = el('div', {
     className: `board${opts.dragPlanes ? ' board-drag' : ''}`,
     role: 'grid',
     'aria-label': opts.title || 'Grilă joc',
     'data-board': opts.mode,
+    style: `--grid-n:${gridN};--fleet-color:${fleetColor}`,
   })
 
   board.appendChild(el('div', { className: 'corner' }))
-  for (let c = 0; c < GRID; c++) {
-    board.appendChild(el('div', { className: 'col-label', text: COLS[c] }))
+  for (let c = 0; c < engine.gridSize; c++) {
+    board.appendChild(el('div', { className: 'col-label', text: engine.cols[c] }))
   }
 
   const player = engine.player(opts.playerId)
@@ -2063,7 +2237,7 @@ function boardElement(opts: BoardOpts): BoardApi {
       head &&
       opts.mode === 'own' &&
       opts.dragPlanes &&
-      engine.player(opts.playerId).planes.length >= PLANES_PER_PLAYER
+      engine.player(opts.playerId).planes.length >= engine.planesPerPlayer
     ) {
       lastGhost = null
       engine.setGhost(null)
@@ -2080,7 +2254,7 @@ function boardElement(opts: BoardOpts): BoardApi {
     const cells = engine.getGhostCells()
     const ok = engine.isGhostValid()
     for (const g of cells) {
-      if (g.r >= 0 && g.r < GRID && g.c >= 0 && g.c < GRID) {
+      if (g.r >= 0 && g.r < engine.gridSize && g.c >= 0 && g.c < engine.gridSize) {
         cellNodes[g.r][g.c].classList.add(ok ? 'ghost-ok' : 'ghost-bad')
       }
     }
@@ -2089,8 +2263,8 @@ function boardElement(opts: BoardOpts): BoardApi {
 
   const refreshCells = () => {
     const pl = engine.player(opts.playerId)
-    for (let r = 0; r < GRID; r++) {
-      for (let c = 0; c < GRID; c++) {
+    for (let r = 0; r < engine.gridSize; r++) {
+      for (let c = 0; c < engine.gridSize; c++) {
         const state =
           opts.mode === 'own'
             ? engine.cellDisplayOwn(pl, r, c)
@@ -2128,10 +2302,10 @@ function boardElement(opts: BoardOpts): BoardApi {
   let suppressClick = false
   const DRAG_THRESH_PX = 8
 
-  for (let r = 0; r < GRID; r++) {
+  for (let r = 0; r < engine.gridSize; r++) {
     board.appendChild(el('div', { className: 'row-label', text: String(r + 1) }))
     cellNodes[r] = []
-    for (let c = 0; c < GRID; c++) {
+    for (let c = 0; c < engine.gridSize; c++) {
       const state =
         opts.mode === 'own'
           ? engine.cellDisplayOwn(player, r, c)
@@ -2149,7 +2323,7 @@ function boardElement(opts: BoardOpts): BoardApi {
         role: 'gridcell',
         'data-r': String(r),
         'data-c': String(c),
-        'aria-label': `${COLS[c]}${r + 1}`,
+        'aria-label': `${engine.cols[c]}${r + 1}`,
       })
       cellNodes[r][c] = cell
 

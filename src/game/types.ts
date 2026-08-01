@@ -1,4 +1,4 @@
-/** Grid size: classic Romanian Avioane board */
+/** Defaults kept for tests / fallbacks — prefer engine.settings at runtime */
 export const GRID = 10
 export const PLANES_PER_PLAYER = 3
 export const COLS = 'ABCDEFGHIJ'
@@ -10,7 +10,7 @@ export type CellState =
   | 'miss'
   | 'hit'
   | 'sunk'
-  | 'radar' // cookie: revealed empty water via radar
+  | 'radar'
 
 export type Orientation = 0 | 90 | 180 | 270
 
@@ -42,11 +42,8 @@ export interface PlayerState {
   name: string
   color: string
   planes: PlanePlacement[]
-  /** own fleet cells: key "r,c" */
   fleet: Map<string, { planeId: number; isHead: boolean }>
-  /** shots received on this player's board */
   received: Map<string, CellState>
-  /** shots this player fired at opponent */
   fired: Map<string, CellState>
   radarUsed: boolean
   planesSunk: number
@@ -75,6 +72,7 @@ export interface GameSnapshot {
   message: string
   p1: SerializablePlayer
   p2: SerializablePlayer
+  settings?: import('./settings').GameSettings
 }
 
 export interface SerializablePlayer {
@@ -98,10 +96,10 @@ export function parseKey(k: string): Coord {
   return { r, c }
 }
 
-export function inBounds(r: number, c: number): boolean {
-  return r >= 0 && r < GRID && c >= 0 && c < GRID
+export function inBounds(r: number, c: number, gridSize = GRID): boolean {
+  return r >= 0 && r < gridSize && c >= 0 && c < gridSize
 }
 
-export function label(coord: Coord): string {
-  return `${COLS[coord.c]}${coord.r + 1}`
+export function label(coord: Coord, cols = COLS): string {
+  return `${cols[coord.c] ?? '?'}${coord.r + 1}`
 }

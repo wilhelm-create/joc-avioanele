@@ -11,19 +11,25 @@ import type {
   SerializablePlayer,
   ShotResult,
 } from './types'
-import { GRID, key, PLANES_PER_PLAYER, label } from './types'
+import { key, label } from './types'
+import {
+  clampSettings,
+  colLabels,
+  DEFAULT_SETTINGS,
+  type GameSettings,
+} from './settings'
 import { t } from '../i18n'
 
 const COLORS = {
-  p1: '#e8956a', // warm coral (no purple / no green)
-  p2: '#5bb4e5', // soft sky blue
+  p1: '#e8956a',
+  p2: '#5bb4e5',
 }
 
-function emptyPlayer(id: PlayerId, name: string): PlayerState {
+function emptyPlayer(id: PlayerId, name: string, color?: string): PlayerState {
   return {
     id,
     name,
-    color: COLORS[id],
+    color: color || COLORS[id],
     planes: [],
     fleet: new Map(),
     received: new Map(),
@@ -77,6 +83,8 @@ export class GameEngine {
   message = ''
   p1: PlayerState
   p2: PlayerState
+  /** Shared multiplayer / local match settings */
+  settings: GameSettings = { ...DEFAULT_SETTINGS }
   /** Cookie: radar revealed cells this game (for UI pulse) */
   lastRadar: Coord[] = []
   /** Pending orientation while placing */
@@ -86,8 +94,46 @@ export class GameEngine {
   listeners = new Set<() => void>()
 
   constructor() {
-    this.p1 = emptyPlayer('p1', 'Jucător 1')
-    this.p2 = emptyPlayer('p2', 'Jucător 2')
+    this.p1 = emptyPlayer('p1', 'Jucător 1', this.settings.planeColor)
+    this.p2 = emptyPlayer('p2', 'Jucător 2', COLORS.p2)
+  }
+
+  get gridSize(): number {
+    return this.settings.gridSize
+  }
+
+  get planesPerPlayer(): number {
+    return this.settings.planesPerPlayer
+  }
+
+  get cols(): string {
+    return colLabels(this.gridSize)
+  }
+
+  get longWings(): boolean {
+    return this.settings.longWings
+  }
+
+  /** Apply settings; clears fleets if geometry changed. */
+  applySettings(raw: Partial<GameSettings>, silent = false) {
+    const next = clampSettings(raw)
+    const geometryChanged =
+      next.gridSize !== this.settings.gridSize ||
+      next.planesPerPlayer !== this.settings.planesPerPlayer ||
+      next.longWings !== this.settings.longWings
+    this.settings = next
+    this.p1.color = next.planeColor
+    if (geometryChanged && this.phase === 'placement') {
+      this.p1.planes = []
+      this.p1.fleet.clear()
+      this.p2.planes = []
+      this.p2.fleet.clear()
+      this.ghostHead = null
+      this.message = t('engineSettingsUpdated')
+    } else {
+      this.p1.color = next.planeColor
+    }
+    if (!silent) this.emit()
   }
 
   onChange(fn: () => void): () => void {
@@ -187,20 +233,35 @@ export class GameEngine {
 
   canPlaceAt(head: Coord, forPlayer?: PlayerId): boolean {
     const p = this.player(forPlayer ?? this.placingPlayer)
-    return isValidPlacement(head, this.placeOrientation, this.occupiedSet(p))
+    return isValidPlacement(
+      head,
+      this.placeOrientation,
+      this.occupiedSet(p),
+      this.gridSize,
+      this.longWings,
+    )
   }
 
   placePlane(head: Coord, silent = false): boolean {
     if (this.phase !== 'placement') return false
     const p = this.player(this.placingPlayer)
-    // Hard cap — never a 4th plane
-    if (p.planes.length >= PLANES_PER_PLAYER) {
+    if (p.planes.length >= this.planesPerPlayer) {
       this.ghostHead = null
       return false
     }
-    if (!isValidPlacement(head, this.placeOrientation, this.occupiedSet(p))) return false
+    if (
+      !isValidPlacement(
+        head,
+        this.placeOrientation,
+        this.occupiedSet(p),
+        this.gridSize,
+        this.longWings,
+      )
+    ) {
+      return false
+    }
 
-    const cells = planeCells(head, this.placeOrientation)
+    const cells = planeCells(head, this.placeOrientation, this.longWings)
     const id = p.planes.length
     const placement = {
       id,
@@ -216,15 +277,14 @@ export class GameEngine {
       p.fleet.set(key(cell.r, cell.c), { planeId: id, isHead })
     }
 
-    // Never auto-advance — player may still rearrange; UI "Done" confirms
     this.ghostHead = null
-    if (p.planes.length >= PLANES_PER_PLAYER) {
+    if (p.planes.length >= this.planesPerPlayer) {
       this.message = t('engineAllPlaced')
     } else {
       this.message = t('enginePlanePlaced', {
         n: p.planes.length,
-        total: PLANES_PER_PLAYER,
-        left: PLANES_PER_PLAYER - p.planes.length,
+        total: this.planesPerPlayer,
+        left: this.planesPerPlayer - p.planes.length,
       })
     }
     if (!silent) this.emit()
@@ -266,7 +326,7 @@ export class GameEngine {
     this.ghostHead = head
     this.message = t('enginePlanePickedUp', {
       n: p.planes.length,
-      total: PLANES_PER_PLAYER,
+      total: this.planesPerPlayer,
     })
     if (!silent) this.emit()
     return { head, orientation }
@@ -286,8 +346,8 @@ export class GameEngine {
   confirmPlacement(silent = false): boolean {
     if (this.phase !== 'placement') return false
     const p = this.player(this.placingPlayer)
-    if (p.planes.length < PLANES_PER_PLAYER) {
-      this.message = t('engineNeedAllPlanes', { n: PLANES_PER_PLAYER })
+    if (p.planes.length < this.planesPerPlayer) {
+      this.message = t('engineNeedAllPlanes', { n: this.planesPerPlayer })
       if (!silent) this.emit()
       return false
     }
@@ -300,8 +360,13 @@ export class GameEngine {
     if (this.phase !== 'placement') return false
     const p = this.player(this.placingPlayer)
     const silent = true
-    while (p.planes.length < PLANES_PER_PLAYER) {
-      const result = randomPlacement(this.occupiedSet(p))
+    while (p.planes.length < this.planesPerPlayer) {
+      const result = randomPlacement(
+        this.occupiedSet(p),
+        Math.random,
+        this.gridSize,
+        this.longWings,
+      )
       if (!result) {
         this.message = t('engineNoSpace')
         this.emit()
@@ -349,11 +414,11 @@ export class GameEngine {
 
   continueAfterPass() {
     if (this.phase !== 'pass-device') return
-    if (this.mode === 'local' && this.placingPlayer === 'p1' && this.p2.planes.length < PLANES_PER_PLAYER) {
+    if (this.mode === 'local' && this.placingPlayer === 'p1' && this.p2.planes.length < this.planesPerPlayer) {
       this.placingPlayer = 'p2'
       this.phase = 'placement'
       this.placeOrientation = 0
-      this.message = `${this.p2.name}, plasează cele 3 avioane (fără să te uite ${this.p1.name}!)`
+      this.message = `${this.p2.name}, plasează cele ${this.planesPerPlayer} avioane (fără să te uite ${this.p1.name}!)`
       this.emit()
       return
     }
@@ -368,7 +433,7 @@ export class GameEngine {
   /** Mark online player ready and start battle if both ready */
   markOnlineReady(who: PlayerId) {
     // placement already done for `who`; check both
-    if (this.p1.planes.length >= PLANES_PER_PLAYER && this.p2.planes.length >= PLANES_PER_PLAYER) {
+    if (this.p1.planes.length >= this.planesPerPlayer && this.p2.planes.length >= this.planesPerPlayer) {
       this.phase = 'battle'
       this.currentPlayer = 'p1'
       this.turn = 1
@@ -429,7 +494,7 @@ export class GameEngine {
       shooter.fired.set(k, 'miss')
       target.received.set(k, 'miss')
       result = { coord: at, kind: 'miss' }
-      this.message = t('engineMiss', { cell: label(at) })
+      this.message = t('engineMiss', { cell: label(at, this.cols) })
     } else {
       const plane = target.planes[fleetCell.planeId]
       if (plane.sunk) {
@@ -451,18 +516,18 @@ export class GameEngine {
           planeId: plane.id,
           sunkCells,
         }
-        this.message = t('engineSunk', { cell: label(at), n: target.planesSunk })
+        this.message = t('engineSunk', { cell: label(at, this.cols), n: target.planesSunk })
       } else {
         shooter.fired.set(k, 'hit')
         target.received.set(k, 'hit')
         result = { coord: at, kind: 'hit', planeId: plane.id }
-        this.message = t('engineHit', { cell: label(at) })
+        this.message = t('engineHit', { cell: label(at, this.cols) })
       }
     }
 
     this.lastShot = result
 
-    if (target.planesSunk >= PLANES_PER_PLAYER) {
+    if (target.planesSunk >= this.planesPerPlayer) {
       this.winner = shooterId
       this.phase = 'game-over'
       this.message = t('engineWin', { name: shooter.name })
@@ -501,8 +566,8 @@ export class GameEngine {
     }
 
     const candidates: Coord[] = []
-    for (let r = 0; r < GRID; r++) {
-      for (let c = 0; c < GRID; c++) {
+    for (let r = 0; r < this.gridSize; r++) {
+      for (let c = 0; c < this.gridSize; c++) {
         const k = key(r, c)
         if (shooter.fired.has(k)) continue
         if (target.fleet.has(k)) continue
@@ -541,7 +606,7 @@ export class GameEngine {
       return
     }
     // if still in placement flow, handled by continueAfterPass
-    if (this.p1.planes.length < PLANES_PER_PLAYER || this.p2.planes.length < PLANES_PER_PLAYER) {
+    if (this.p1.planes.length < this.planesPerPlayer || this.p2.planes.length < this.planesPerPlayer) {
       this.continueAfterPass()
       return
     }
@@ -590,6 +655,7 @@ export class GameEngine {
       turn: this.turn,
       lastShot: this.lastShot,
       message: this.message,
+      settings: { ...this.settings },
       p1: serializePlayer(this.p1),
       p2: serializePlayer(this.p2),
     }
@@ -604,6 +670,7 @@ export class GameEngine {
     this.turn = s.turn
     this.lastShot = s.lastShot
     this.message = s.message
+    if (s.settings) this.settings = clampSettings(s.settings)
     this.p1 = deserializePlayer(s.p1)
     this.p2 = deserializePlayer(s.p2)
     if (!silent) this.emit()
@@ -612,7 +679,7 @@ export class GameEngine {
   /** View helpers for UI */
   getGhostCells(): Coord[] {
     if (!this.ghostHead || this.phase !== 'placement') return []
-    return planeCells(this.ghostHead, this.placeOrientation)
+    return planeCells(this.ghostHead, this.placeOrientation, this.longWings)
   }
 
   isGhostValid(): boolean {

@@ -1,5 +1,6 @@
 import { getToken } from '../auth/session'
 import type { Coord, PlayerId, SerializablePlayer } from '../game/types'
+import type { GameSettings } from '../game/settings'
 
 export type ServerMessage =
   | { type: 'welcome'; user: { id: string; username: string } }
@@ -22,10 +23,18 @@ export type ServerMessage =
   | { type: 'rematch'; from?: string }
   | { type: 'chat'; text: string; fromName?: string }
   | { type: 'player-joined'; username?: string }
+  | {
+      type: 'settings'
+      settings: GameSettings
+      geometryChanged?: boolean
+      room?: RoomInfo
+      from?: string
+    }
 
 export interface RoomInfo {
   code: string
   players: { userId: string; username: string; role: PlayerId; ready: boolean }[]
+  settings?: GameSettings
 }
 
 export interface ActiveGame {
@@ -47,6 +56,7 @@ export type Outgoing =
   | { type: 'shot'; player: PlayerId; coord: Coord }
   | { type: 'radar'; player: PlayerId }
   | { type: 'rematch' }
+  | { type: 'settings'; settings: GameSettings }
   | { type: 'ping' }
 
 /**
@@ -208,6 +218,14 @@ export class GameSocket {
           })
         } else if (type === 'rematch') {
           this.emit({ type: 'rematch', from: String(ev.from || '') })
+        } else if (type === 'settings') {
+          this.emit({
+            type: 'settings',
+            settings: ev.settings as GameSettings,
+            geometryChanged: Boolean(ev.geometryChanged),
+            room: data.room || undefined,
+            from: String(ev.from || ''),
+          })
         } else if (type) {
           this.emit(ev as unknown as ServerMessage)
         }

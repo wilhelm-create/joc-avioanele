@@ -958,9 +958,10 @@ html[data-theme='dark'] .room-code {
 }
 
 .board {
+  --grid-n: 10;
   display: grid;
-  grid-template-columns: 22px repeat(10, var(--cell));
-  grid-template-rows: 22px repeat(10, var(--cell));
+  grid-template-columns: 20px repeat(var(--grid-n), var(--cell));
+  grid-template-rows: 20px repeat(var(--grid-n), var(--cell));
   gap: 2px;
   user-select: none;
   /* pan-y: allow vertical page scroll when finger starts on the board (critical on mobile) */
@@ -972,6 +973,114 @@ html[data-theme='dark'] .room-code {
   backdrop-filter: blur(16px);
   box-shadow: 0 1px 0 var(--glass-inset) inset;
   max-width: 100%;
+}
+
+/* Match settings (invite / pre-game) */
+.game-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 0 12px;
+}
+
+.game-settings-panel h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.settings-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.diff-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.diff-btn {
+  appearance: none;
+  min-height: 44px;
+  border-radius: 12px;
+  border: 1.5px solid var(--border);
+  background: color-mix(in oklch, var(--bg-elevated) 80%, transparent);
+  color: var(--text);
+  font-weight: 700;
+  font-size: 0.9rem;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.diff-btn.active {
+  border-color: var(--brand);
+  background: color-mix(in oklch, var(--brand) 22%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--brand) 30%, transparent);
+}
+
+.settings-range {
+  width: 100%;
+  accent-color: var(--brand);
+  height: 28px;
+}
+
+.toggle-btn {
+  appearance: none;
+  min-height: 44px;
+  border-radius: 12px;
+  border: 1.5px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
+  text-align: left;
+  padding: 0 14px;
+}
+
+.toggle-btn.active {
+  border-color: var(--brand);
+  background: color-mix(in oklch, var(--brand) 18%, transparent);
+}
+
+.color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.swatch-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in oklch, white 40%, transparent);
+  cursor: pointer;
+  padding: 0;
+  touch-action: manipulation;
+}
+
+.swatch-btn.active {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.color-picker {
+  width: 100%;
+  height: 40px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* Shrink cells on large boards so the grid fits phones */
+.board[style*='--grid-n:12'],
+.board[style*='--grid-n:13'],
+.board[style*='--grid-n:14'] {
+  --cell: min(6.2vw, 28px, 4.6dvh);
 }
 
 /* While dragging a plane: lock page scroll, show grab cursor */
@@ -1031,15 +1140,23 @@ html[data-theme='dark'] .room-code {
 }
 
 .cell.plane {
-  background: linear-gradient(145deg, var(--brand), var(--brand-deep));
+  background: linear-gradient(
+    145deg,
+    var(--fleet-color, var(--brand)),
+    color-mix(in oklch, var(--fleet-color, var(--brand)) 70%, black)
+  );
   border-color: color-mix(in oklch, white 30%, transparent);
   box-shadow: inset 0 0 8px color-mix(in oklch, white 25%, transparent);
 }
 
 .cell.head {
-  background: linear-gradient(145deg, var(--orange), var(--rose));
+  background: linear-gradient(
+    145deg,
+    color-mix(in oklch, var(--fleet-color, var(--orange)) 85%, white),
+    var(--fleet-color, var(--orange))
+  );
   border-color: color-mix(in oklch, white 40%, transparent);
-  box-shadow: 0 0 10px color-mix(in oklch, var(--orange) 45%, transparent);
+  box-shadow: 0 0 10px color-mix(in oklch, var(--fleet-color, var(--orange)) 45%, transparent);
 }
 
 .cell.head::after {

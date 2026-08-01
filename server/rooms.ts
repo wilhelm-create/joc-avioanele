@@ -25,6 +25,47 @@ export interface RoomEvent {
   payload: Record<string, unknown>
 }
 
+export type Difficulty = 'easy' | 'medium' | 'hard' | 'impossible'
+
+export interface GameSettings {
+  difficulty: Difficulty
+  gridSize: number
+  planesPerPlayer: number
+  longWings: boolean
+  planeColor: string
+}
+
+export const DEFAULT_ROOM_SETTINGS: GameSettings = {
+  difficulty: 'medium',
+  gridSize: 10,
+  planesPerPlayer: 3,
+  longWings: false,
+  planeColor: '#e8956a',
+}
+
+export function clampRoomSettings(raw: Partial<GameSettings> | null | undefined): GameSettings {
+  const base = { ...DEFAULT_ROOM_SETTINGS, ...(raw || {}) }
+  let gridSize = Math.round(Number(base.gridSize) || 10)
+  gridSize = Math.min(14, Math.max(8, gridSize))
+  let planes = Math.round(Number(base.planesPerPlayer) || 3)
+  const maxForGrid = Math.min(12, Math.max(1, Math.floor((gridSize * gridSize) / 14)))
+  planes = Math.min(maxForGrid, Math.max(1, planes))
+  const difficulty = (['easy', 'medium', 'hard', 'impossible'] as Difficulty[]).includes(
+    base.difficulty as Difficulty,
+  )
+    ? (base.difficulty as Difficulty)
+    : 'medium'
+  let planeColor = String(base.planeColor || '#e8956a')
+  if (!/^#[0-9a-fA-F]{6}$/.test(planeColor)) planeColor = '#e8956a'
+  return {
+    difficulty,
+    gridSize,
+    planesPerPlayer: planes,
+    longWings: Boolean(base.longWings),
+    planeColor,
+  }
+}
+
 export interface Room {
   code: string
   hostId: string
@@ -33,6 +74,7 @@ export interface Room {
   events: RoomEvent[]
   nextEventId: number
   createdAt: number
+  settings: GameSettings
 }
 
 interface RoomJSON {
@@ -43,6 +85,7 @@ interface RoomJSON {
   events: RoomEvent[]
   nextEventId: number
   createdAt: number
+  settings?: GameSettings
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -80,6 +123,7 @@ function roomToJson(room: Room): RoomJSON {
     events: room.events.slice(-200),
     nextEventId: room.nextEventId,
     createdAt: room.createdAt,
+    settings: room.settings || DEFAULT_ROOM_SETTINGS,
   }
 }
 
@@ -92,6 +136,7 @@ function roomFromJson(j: RoomJSON): Room {
     events: j.events || [],
     nextEventId: j.nextEventId || 1,
     createdAt: j.createdAt,
+    settings: clampRoomSettings(j.settings),
   }
 }
 
@@ -278,6 +323,7 @@ export async function createRoom(userId: string, username: string): Promise<Room
     events: [],
     nextEventId: 1,
     createdAt: Date.now(),
+    settings: { ...DEFAULT_ROOM_SETTINGS },
   }
   room.players.set(userId, { userId, username, role: 'p1', lastSeen: Date.now() })
   await saveRoom(room)
@@ -541,7 +587,41 @@ export function roomPublic(room: Room) {
       role: p.role,
       ready: room.ready.has(p.userId),
     })),
+    settings: clampRoomSettings(room.settings),
   }
+}
+
+/**
+ * Update match settings. Clears ready flags so both must re-confirm fleets
+ * if geometry (grid / planes / wings) changed.
+ */
+export async function updateRoomSettings(
+  code: string,
+  userId: string,
+  raw: Partial<GameSettings>,
+): Promise<Room | undefined> {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const room = await loadRoom(code)
+    if (!room || !room.players.has(userId)) return undefined
+    const next = clampRoomSettings({ ...room.settings, ...raw })
+    const geometryChanged =
+      next.gridSize !== room.settings.gridSize ||
+      next.planesPerPlayer !== room.settings.planesPerPlayer ||
+      next.longWings !== room.settings.longWings
+    room.settings = next
+    if (geometryChanged) {
+      room.ready.clear()
+    }
+    pushEventSync(room, userId, room.players.get(userId)?.username || '?', {
+      type: 'settings',
+      settings: next,
+      geometryChanged,
+    })
+    await saveRoom(room)
+    const again = await loadRoom(code)
+    if (again && again.settings.gridSize === next.gridSize) return again
+  }
+  return loadRoom(code) ?? undefined
 }
 
 export async function heartbeat(_userId: string): Promise<void> {

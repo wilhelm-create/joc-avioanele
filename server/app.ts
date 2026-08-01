@@ -33,6 +33,8 @@ import {
   roomPublic,
   heartbeat,
   cleanupRooms,
+  updateRoomSettings,
+  type GameSettings,
 } from './rooms.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -459,6 +461,13 @@ export function createApp() {
           room = (await pushEvent(room.code, user.id, user.username, { type: 'start-battle' }))!
         }
         res.json({ ok: true, room: roomPublic(room), bothReady: both })
+        return
+      }
+
+      if (type === 'settings') {
+        const settings = (body.settings || body) as Partial<GameSettings>
+        room = (await updateRoomSettings(room.code, user.id, settings))!
+        res.json({ ok: true, room: roomPublic(room), settings: room.settings })
         return
       }
 
