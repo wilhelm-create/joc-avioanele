@@ -1,5 +1,5 @@
 import { GameEngine } from '../game/engine'
-import type { Coord, PlayerId, ShotResult } from '../game/types'
+import type { Coord, Orientation, PlayerId, ShotResult } from '../game/types'
 import { COLS, GRID, PLANES_PER_PLAYER } from '../game/types'
 import {
   buzz,
@@ -961,22 +961,82 @@ function placementScreen(): HTMLElement {
   boardApi = boardElement({
     mode: 'own',
     playerId: placeFor,
-    interactive: true, // always: place OR pick up to move
+    interactive: true, // place, tap-to-pick, or drag-and-drop
     showFleet: true,
     ghost: true,
     stickyGhost: true,
+    dragPlanes: true,
     onGhost: (c) => {
       if (c) stickyGhost = c
+    },
+    onDragPlane: (phase, coord, meta) => {
+      engine.placingPlayer = placeFor
+      if (phase === 'start') {
+        if (!coord) return false
+        const lifted = engine.pickUpPlaneAt(coord, true)
+        if (!lifted) return false
+        buzz(8)
+        stickyGhost = lifted.head
+        boardApi?.refreshCells()
+        boardApi?.paintGhost(lifted.head)
+        // offset: grab cell relative to cockpit so drop keeps grip under finger
+        return {
+          ok: true,
+          grabOffset: {
+            r: coord.r - lifted.head.r,
+            c: coord.c - lifted.head.c,
+          },
+          origin: lifted,
+        }
+      }
+      if (phase === 'move' && coord) {
+        const head = meta?.grabOffset
+          ? { r: coord.r - meta.grabOffset.r, c: coord.c - meta.grabOffset.c }
+          : coord
+        stickyGhost = head
+        boardApi?.paintGhost(head)
+        return true
+      }
+      if (phase === 'drop' && coord) {
+        const head = meta?.grabOffset
+          ? { r: coord.r - meta.grabOffset.r, c: coord.c - meta.grabOffset.c }
+          : coord
+        stickyGhost = head
+        if (engine.placePlane(head, true)) {
+          sfxPlace()
+          stickyGhost = defaultGhost
+          paint()
+          return true
+        }
+        // invalid drop → restore original if we have it
+        if (meta?.origin) {
+          engine.restorePlane(meta.origin.head, meta.origin.orientation, true)
+          stickyGhost = defaultGhost
+          paint()
+          buzz(30)
+          return false
+        }
+        boardApi?.paintGhost(head)
+        buzz(30)
+        return false
+      }
+      if (phase === 'cancel' && meta?.origin) {
+        engine.restorePlane(meta.origin.head, meta.origin.orientation, true)
+        stickyGhost = defaultGhost
+        paint()
+        return false
+      }
+      return false
     },
     onCell: (coord) => {
       engine.placingPlayer = placeFor
       const fleetCell = engine.player(placeFor).fleet.get(`${coord.r},${coord.c}`)
-      // Tap a placed plane → pick up and move
+      // Tap a placed plane → pick up (click without drag)
       if (fleetCell) {
         if (engine.pickUpPlaneAt(coord)) {
           buzz(10)
           stickyGhost = engine.ghostHead ?? coord
-          paint() // refresh count + free ghost
+          paint()
         }
         return
       }
@@ -990,7 +1050,7 @@ function placementScreen(): HTMLElement {
       if (engine.placePlane(coord)) {
         sfxPlace()
         stickyGhost = defaultGhost
-        paint() // stay on placement — user confirms with Done
+        paint()
       } else {
         buzz(30)
         screenShake(document.getElementById('app'))
@@ -1287,6 +1347,13 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node
 }
 
+type DragPhase = 'start' | 'move' | 'drop' | 'cancel'
+
+interface DragMeta {
+  grabOffset: Coord
+  origin: { head: Coord; orientation: Orientation }
+}
+
 interface BoardOpts {
   mode: 'own' | 'enemy'
   playerId: PlayerId
@@ -1295,9 +1362,21 @@ interface BoardOpts {
   ghost: boolean
   /** Keep last ghost when pointer leaves (mobile-friendly rotate) */
   stickyGhost?: boolean
+  /** Enable drag-and-drop of placed planes (placement only) */
+  dragPlanes?: boolean
   title?: string
   onCell?: (coord: Coord, cellEl: HTMLElement) => void
   onGhost?: (coord: Coord | null) => void
+  /**
+   * Drag lifecycle for planes.
+   * start: return { ok, grabOffset, origin } or false
+   * move/drop/cancel: return success boolean
+   */
+  onDragPlane?: (
+    phase: DragPhase,
+    coord: Coord | null,
+    meta?: DragMeta,
+  ) => boolean | { ok: true; grabOffset: Coord; origin: DragMeta['origin'] }
 }
 
 interface BoardApi {
@@ -1311,7 +1390,7 @@ function boardElement(opts: BoardOpts): BoardApi {
   if (opts.title) wrap.appendChild(el('div', { className: 'board-title', text: opts.title }))
 
   const board = el('div', {
-    className: 'board',
+    className: `board${opts.dragPlanes ? ' board-drag' : ''}`,
     role: 'grid',
     'aria-label': opts.title || 'Grilă joc',
     'data-board': opts.mode,
@@ -1358,14 +1437,34 @@ function boardElement(opts: BoardOpts): BoardApi {
         const classes = ['cell', state]
         if (!opts.interactive) classes.push('disabled')
         if (opts.mode === 'enemy' && opts.interactive) classes.push('enemy-target')
-        // preserve ghost classes if any
         if (cell.classList.contains('ghost-ok')) classes.push('ghost-ok')
         if (cell.classList.contains('ghost-bad')) classes.push('ghost-bad')
+        if (cell.classList.contains('dragging')) classes.push('dragging')
         cell.className = classes.join(' ')
       }
     }
     if (lastGhost && opts.ghost) paintGhost(lastGhost)
   }
+
+  const coordFromPoint = (clientX: number, clientY: number): Coord | null => {
+    const elAt = document.elementFromPoint(clientX, clientY)
+    if (!elAt) return null
+    const cell = (elAt as HTMLElement).closest?.('.cell') as HTMLElement | null
+    if (!cell || !board.contains(cell)) return null
+    const r = Number(cell.dataset.r)
+    const c = Number(cell.dataset.c)
+    if (Number.isNaN(r) || Number.isNaN(c)) return null
+    return { r, c }
+  }
+
+  // Drag state for placement planes
+  let dragActive = false
+  let dragMoved = false
+  let dragPointerId: number | null = null
+  let dragStartCell: Coord | null = null
+  let dragMeta: DragMeta | null = null
+  let suppressClick = false
+  const DRAG_THRESH_PX = 8
 
   for (let r = 0; r < GRID; r++) {
     board.appendChild(el('div', { className: 'row-label', text: String(r + 1) }))
@@ -1379,6 +1478,9 @@ function boardElement(opts: BoardOpts): BoardApi {
       const classes = ['cell', state]
       if (!opts.interactive) classes.push('disabled')
       if (opts.mode === 'enemy' && opts.interactive) classes.push('enemy-target')
+      if (opts.dragPlanes && (state === 'plane' || state === 'head')) {
+        classes.push('plane-draggable')
+      }
 
       const cell = el('div', {
         className: classes.join(' '),
@@ -1390,21 +1492,125 @@ function boardElement(opts: BoardOpts): BoardApi {
       cellNodes[r][c] = cell
 
       if (opts.interactive || opts.ghost) {
-        // Ghost preview on touch/hover — do NOT preventDefault (that kills click on iOS)
-        cell.addEventListener('pointerdown', () => {
-          if (opts.ghost) paintGhost({ r, c })
+        cell.addEventListener('pointerdown', (e: Event) => {
+          const pe = e as PointerEvent
+          // Ghost preview for empty cells
+          if (opts.ghost && !opts.dragPlanes) paintGhost({ r, c })
+
+          if (!opts.dragPlanes || !opts.onDragPlane) return
+          const pl = engine.player(opts.playerId)
+          const hasPlane = pl.fleet.has(`${r},${c}`)
+          if (!hasPlane) {
+            if (opts.ghost) paintGhost({ r, c })
+            return
+          }
+
+          // Start potential drag on a plane cell
+          dragActive = true
+          dragMoved = false
+          dragPointerId = pe.pointerId
+          dragStartCell = { r, c }
+          dragMeta = null
+          suppressClick = false
+          try {
+            cell.setPointerCapture(pe.pointerId)
+          } catch {
+            /* ignore */
+          }
+          board.classList.add('is-dragging')
         })
+
         cell.addEventListener('pointerenter', () => {
+          if (dragActive) return
           if (opts.ghost) paintGhost({ r, c })
         })
-        cell.addEventListener('click', () => opts.onCell?.({ r, c }, cell))
+
+        cell.addEventListener('click', (e: Event) => {
+          if (suppressClick) {
+            e.preventDefault()
+            e.stopPropagation()
+            suppressClick = false
+            return
+          }
+          opts.onCell?.({ r, c }, cell)
+        })
       }
       board.appendChild(cell)
     }
   }
 
+  if (opts.dragPlanes && opts.onDragPlane) {
+    const onMove = (e: PointerEvent) => {
+      if (!dragActive || e.pointerId !== dragPointerId) return
+      const start = dragStartCell
+      if (!start) return
+
+      // Threshold before treating as drag (allows tap-to-pick)
+      if (!dragMoved) {
+        // use movement from first cell center-ish
+        const startNode = cellNodes[start.r]?.[start.c]
+        if (startNode) {
+          const rect = startNode.getBoundingClientRect()
+          const dx = e.clientX - (rect.left + rect.width / 2)
+          const dy = e.clientY - (rect.top + rect.height / 2)
+          if (dx * dx + dy * dy < DRAG_THRESH_PX * DRAG_THRESH_PX) return
+        }
+        dragMoved = true
+        suppressClick = true
+        const result = opts.onDragPlane!('start', start)
+        if (typeof result !== 'object' || !result.ok) {
+          dragActive = false
+          dragPointerId = null
+          dragStartCell = null
+          board.classList.remove('is-dragging')
+          return
+        }
+        dragMeta = { grabOffset: result.grabOffset, origin: result.origin }
+      }
+
+      // Prevent page scroll while dragging a plane
+      e.preventDefault()
+      const under = coordFromPoint(e.clientX, e.clientY)
+      if (under && dragMeta) {
+        opts.onDragPlane!('move', under, dragMeta)
+      }
+    }
+
+    const endDrag = (e: PointerEvent, cancelled: boolean) => {
+      if (!dragActive || e.pointerId !== dragPointerId) return
+      const wasMoved = dragMoved
+      const meta = dragMeta
+      const start = dragStartCell
+      dragActive = false
+      dragPointerId = null
+      dragStartCell = null
+      dragMeta = null
+      board.classList.remove('is-dragging')
+
+      if (!wasMoved) {
+        // Tap — let click handler pick up / place
+        return
+      }
+
+      suppressClick = true
+      e.preventDefault()
+      if (cancelled || !meta) {
+        opts.onDragPlane?.('cancel', start, meta ?? undefined)
+        return
+      }
+      const under = coordFromPoint(e.clientX, e.clientY) ?? start
+      opts.onDragPlane?.('drop', under, meta)
+    }
+
+    board.addEventListener('pointermove', onMove as EventListener, { passive: false })
+    board.addEventListener('pointerup', (e) => endDrag(e as PointerEvent, false))
+    board.addEventListener('pointercancel', (e) => endDrag(e as PointerEvent, true))
+  }
+
   if (opts.ghost && !opts.stickyGhost) {
-    board.addEventListener('pointerleave', () => paintGhost(null))
+    board.addEventListener('pointerleave', () => {
+      if (!dragActive) paintGhost(null)
+    })
   }
   wrap.appendChild(board)
   return { wrap, paintGhost, refreshCells }

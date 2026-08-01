@@ -228,19 +228,23 @@ export class GameEngine {
   }
 
   /**
-   * Pick up a placed plane (tap to move). Removes it and restores ghost + orientation
-   * so the player can place it again elsewhere.
+   * Pick up a placed plane (tap / drag to move). Removes it and restores ghost + orientation.
+   * @returns original head + orientation for cancel / drag offset, or null
    */
-  pickUpPlaneAt(coord: Coord, silent = false): boolean {
-    if (this.phase !== 'placement') return false
+  pickUpPlaneAt(
+    coord: Coord,
+    silent = false,
+  ): { head: Coord; orientation: Orientation } | null {
+    if (this.phase !== 'placement') return null
     const p = this.player(this.placingPlayer)
     const cell = p.fleet.get(key(coord.r, coord.c))
-    if (!cell) return false
+    if (!cell) return null
     const plane = p.planes[cell.planeId]
-    if (!plane) return false
+    if (!plane) return null
 
-    this.placeOrientation = plane.orientation
+    const orientation = plane.orientation
     const head = { ...plane.head }
+    this.placeOrientation = orientation
 
     for (const c of plane.cells) {
       p.fleet.delete(key(c.r, c.c))
@@ -261,7 +265,17 @@ export class GameEngine {
       total: PLANES_PER_PLAYER,
     })
     if (!silent) this.emit()
-    return true
+    return { head, orientation }
+  }
+
+  /** Place back at a previous head/orientation (drag cancel). */
+  restorePlane(head: Coord, orientation: Orientation, silent = false): boolean {
+    if (this.phase !== 'placement') return false
+    const prev = this.placeOrientation
+    this.placeOrientation = orientation
+    const ok = this.placePlane(head, silent)
+    if (!ok) this.placeOrientation = prev
+    return ok
   }
 
   /** Explicit confirm — only then leave placement / wait for opponent. */

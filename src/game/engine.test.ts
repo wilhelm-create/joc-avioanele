@@ -36,11 +36,14 @@ function testFullLocalGame() {
   assert(g.autoPlaceRemaining(), 'auto p1')
   assert(g.phase === 'placement', 'still placement until confirm')
   assert(g.p1.planes.length === 3, 'p1 has 3 planes')
-  // pick up and re-place should work
+  // pick up and re-place / drag-cancel restore
   const head0 = { ...g.p1.planes[0].head }
-  assert(g.pickUpPlaneAt(head0), 'pick up plane')
+  const o0 = g.p1.planes[0].orientation
+  const lifted = g.pickUpPlaneAt(head0)
+  assert(lifted, 'pick up plane')
   assert(g.p1.planes.length === 2, 'one less after pick up')
-  assert(g.autoPlaceRemaining(), 're-auto remaining')
+  assert(g.restorePlane(lifted!.head, lifted!.orientation), 'restore after drag cancel')
+  assert(g.p1.planes.length === 3, 'restored to 3')
   assert(g.confirmPlacement(), 'confirm p1')
   assert(g.phase === 'pass-device', 'pass after p1 confirm')
   g.continueAfterPass()

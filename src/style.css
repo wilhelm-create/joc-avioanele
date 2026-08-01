@@ -965,6 +965,25 @@ html[data-theme='dark'] .room-code {
   max-width: 100%;
 }
 
+/* While dragging a plane: lock page scroll, show grab cursor */
+.board.board-drag.is-dragging {
+  touch-action: none;
+  cursor: grabbing;
+}
+
+.cell.plane-draggable {
+  cursor: grab;
+  touch-action: none;
+}
+
+.board.is-dragging .cell {
+  cursor: grabbing;
+}
+
+.cell.plane-draggable:active {
+  cursor: grabbing;
+}
+
 .board .col-label,
 .board .row-label {
   display: flex;

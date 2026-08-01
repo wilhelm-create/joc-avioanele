@@ -105,13 +105,13 @@ export const locales: Record<Lang, Dict> = {
     placeBanner:
       'Plasează cele 3 avioane pe grila TA. Prietenul face la fel pe device-ul lui.',
     placeReadyBanner:
-      'Flota e completă. Apasă un avion ca să-l muți, sau Gata când ești mulțumit.',
+      'Flota e completă. Trage un avion ca să-l muți, sau Gata când ești mulțumit.',
     rotate: '🔄 Rotește ({deg}°)',
     auto: '✨ Auto',
     clear: 'Șterge',
     doneFleet: '✓ Gata — flota mea e gata',
     cabinHint:
-      'Cabina (◆) e vulnerabilă. Apasă un avion plasat ca să-l muți. Apasă Gata doar când ești mulțumit.',
+      'Cabina (◆) e vulnerabilă. Trage un avion ca să-l muți (sau apasă-l). Apasă Gata când ești mulțumit.',
 
     yourTurn: 'Tura ta',
     turnOf: 'Tura: {name}',
@@ -265,13 +265,13 @@ export const locales: Record<Lang, Dict> = {
 
     yourFleet: 'your fleet',
     placeBanner: 'Place your 3 planes on YOUR grid. Your friend does the same on their device.',
-    placeReadyBanner: 'Fleet complete. Tap a plane to move it, or Done when you are happy.',
+    placeReadyBanner: 'Fleet complete. Drag a plane to move it, or Done when you are happy.',
     rotate: '🔄 Rotate ({deg}°)',
     auto: '✨ Auto',
     clear: 'Clear',
     doneFleet: '✓ Done — my fleet is ready',
     cabinHint:
-      'The cockpit (◆) is vulnerable. Tap a placed plane to move it. Press Done only when you are ready.',
+      'The cockpit (◆) is vulnerable. Drag a plane to move it (or tap it). Press Done when ready.',
 
     yourTurn: 'Your turn',
     turnOf: 'Turn: {name}',
