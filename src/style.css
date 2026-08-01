@@ -321,12 +321,9 @@ body.app-shell::after {
 
 .site-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   gap: 8px;
-  padding: calc(10px + var(--safe-top)) 2px 10px;
-  margin: 0 -4px;
-  flex-wrap: nowrap;
+  padding: calc(8px + var(--safe-top)) 0 10px;
   flex-shrink: 0;
   background: var(--header-bg);
   backdrop-filter: blur(20px) saturate(160%);
@@ -338,6 +335,38 @@ body.app-shell::after {
   box-shadow: 0 1px 0 var(--glass-inset) inset;
 }
 
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.header-row-top {
+  gap: 10px;
+}
+
+.header-row-user {
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.header-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.header-user-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .brand {
   appearance: none;
   border: none;
@@ -345,25 +374,28 @@ body.app-shell::after {
   color: var(--text);
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 1.1rem;
+  gap: 6px;
+  font-size: 1.05rem;
   font-weight: 800;
   cursor: pointer;
   font-family: inherit;
-  min-height: 44px;
-  padding: 4px 0;
+  min-height: 40px;
+  padding: 2px 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
 }
 
 .brand-mark {
-  font-size: 1.3rem;
-  filter: drop-shadow(0 2px 8px color-mix(in oklch, var(--violet) 40%, transparent));
+  font-size: 1.25rem;
+  flex-shrink: 0;
+  filter: drop-shadow(0 2px 8px color-mix(in oklch, var(--brand) 40%, transparent));
 }
 
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: nowrap;
+.brand-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .user-chip {
@@ -375,7 +407,8 @@ body.app-shell::after {
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 6px 10px;
-  max-width: 28vw;
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -392,6 +425,7 @@ body.app-shell::after {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   box-shadow: 0 1px 0 var(--glass-inset) inset;
+  flex-shrink: 0;
 }
 
 .lang-btn,
@@ -401,11 +435,11 @@ body.app-shell::after {
   background: transparent;
   color: var(--text-muted);
   font-weight: 800;
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   font-family: inherit;
-  min-height: 36px;
-  min-width: 36px;
-  padding: 6px 9px;
+  min-height: 34px;
+  min-width: 34px;
+  padding: 5px 8px;
   cursor: pointer;
   transition:
     background 0.15s ease,
@@ -424,9 +458,17 @@ body.app-shell::after {
 }
 
 .theme-btn {
-  font-size: 1rem;
+  font-size: 0.95rem;
   line-height: 1;
-  min-width: 40px;
+  min-width: 36px;
+}
+
+.header-user-actions .btn-sm {
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .btn-sm {

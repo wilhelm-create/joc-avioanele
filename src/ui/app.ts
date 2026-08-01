@@ -372,31 +372,47 @@ function themeToggle(): HTMLElement {
 
 function siteHeader(): HTMLElement {
   const header = el('header', { className: 'site-header' })
-  const brand = el('button', {
-    className: 'brand',
-    type: 'button',
-    onClick: () => {
-      if (currentUser) {
-        uiPhase = 'home'
-        paint()
-      }
-    },
-  }, [el('span', { className: 'brand-mark', text: '✈' }), el('span', { text: t('appName') })])
 
-  const right = el('div', { className: 'header-actions' })
-  right.appendChild(themeToggle())
-  right.appendChild(langToggle())
+  // Row 1: brand + theme/lang (always fits)
+  const top = el('div', { className: 'header-row header-row-top' })
+  const brand = el(
+    'button',
+    {
+      className: 'brand',
+      type: 'button',
+      onClick: () => {
+        if (currentUser) {
+          uiPhase = 'home'
+          paint()
+        }
+      },
+    },
+    [
+      el('span', { className: 'brand-mark', text: '✈' }),
+      el('span', { className: 'brand-text', text: t('appName') }),
+    ],
+  )
+  const tools = el('div', { className: 'header-tools' })
+  tools.appendChild(themeToggle())
+  tools.appendChild(langToggle())
+  top.append(brand, tools)
+  header.appendChild(top)
+
+  // Row 2: user identity + actions (only when logged in)
   if (currentUser) {
-    right.appendChild(
+    const bottom = el('div', { className: 'header-row header-row-user' })
+    bottom.appendChild(
       el('span', {
         className: 'user-chip',
         text: `${currentUser.username} · ${currentUser.wins}W`,
         title: t('yourAccount'),
       }),
     )
-    right.appendChild(
+    const actions = el('div', { className: 'header-user-actions' })
+    actions.appendChild(
       el('button', {
         className: 'btn btn-ghost btn-sm',
+        type: 'button',
         text: t('leaderboard'),
         onClick: async () => {
           leaders = await fetchLeaderboard().catch(() => [])
@@ -405,9 +421,10 @@ function siteHeader(): HTMLElement {
         },
       }),
     )
-    right.appendChild(
+    actions.appendChild(
       el('button', {
         className: 'btn btn-ghost btn-sm',
+        type: 'button',
         text: t('logout'),
         'data-action': 'logout',
         onClick: () => {
@@ -419,8 +436,10 @@ function siteHeader(): HTMLElement {
         },
       }),
     )
+    bottom.appendChild(actions)
+    header.appendChild(bottom)
   }
-  header.append(brand, right)
+
   return header
 }
 
