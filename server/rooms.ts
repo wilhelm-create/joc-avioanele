@@ -224,12 +224,6 @@ async function removePlayerRoom(userId: string, code: string): Promise<void> {
   await setPlayerCodes(userId, codes)
 }
 
-/** @deprecated prefer getPlayerCodes — returns first room for back-compat */
-async function getPlayerRoomCode(userId: string): Promise<string | null> {
-  const codes = await getPlayerCodes(userId)
-  return codes[0] || null
-}
-
 function genCode(): string {
   let code = ''
   for (let i = 0; i < 5; i++) code += ALPHABET[Math.floor(Math.random() * ALPHABET.length)]
