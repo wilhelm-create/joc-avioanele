@@ -479,13 +479,6 @@ function authScreen(): HTMLElement {
     )
   }
 
-  card.appendChild(
-    el('p', {
-      className: 'hint',
-      text: 'Fiecare joacă de pe telefonul / tableta / calculatorul lui — de oriunde. Nu se dă telefonul din mână.',
-    }),
-  )
-
   return screen
 }
 
