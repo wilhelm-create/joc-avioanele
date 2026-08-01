@@ -63,7 +63,7 @@ export const locales: Record<Lang, Dict> = {
     passwordChanged: 'Parola a fost schimbată',
     backHome: '← Înapoi acasă',
 
-    hello: 'Salut, {name}! Invită un prieten — el joacă de pe device-ul lui, de acasă sau de oriunde.',
+    hello: 'Salut, {name}! Invită un prieten.',
     wins: 'victorii',
     losses: 'înfrângeri',
     games: 'meciuri',
@@ -285,7 +285,7 @@ export const locales: Record<Lang, Dict> = {
     passwordChanged: 'Password changed',
     backHome: '← Back home',
 
-    hello: 'Hi, {name}! Invite a friend — they play on their own device, from home or anywhere.',
+    hello: 'Hi, {name}! Invite a friend.',
     wins: 'wins',
     losses: 'losses',
     games: 'games',
