@@ -74,7 +74,7 @@ export const locales: Record<Lang, Dict> = {
       '⏳ Așteaptă ca prietenul să deschidă linkul pe device-ul lui…',
     bothOnline: '✅ Amândoi sunteți online — începe plasarea!',
     joinFromSms:
-      'Din SMS sau mesaj: deschide linkul, sau introdu codul camerei aici. Joci de pe device-ul tău.',
+      'Din SMS sau mesaj: deschide linkul, sau introdu codul camerei aici.',
     roomCode: 'Cod cameră',
     roomCodePlaceholder: 'ex: K7M2P',
     enterRoom: 'Intră în joc',
@@ -231,7 +231,7 @@ export const locales: Record<Lang, Dict> = {
     waitingFriendOpen: '⏳ Waiting for your friend to open the link on their device…',
     bothOnline: '✅ Both online — placement starts!',
     joinFromSms:
-      'From SMS or chat: open the link, or enter the room code here. You play on your own device.',
+      'From SMS or chat: open the link, or enter the room code here.',
     roomCode: 'Room code',
     roomCodePlaceholder: 'e.g. K7M2P',
     enterRoom: 'Join game',
