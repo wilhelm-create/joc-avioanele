@@ -10,6 +10,7 @@ blob-report
 playwright/.cache
 .env
 .env.*
+.env.local
 !.env.example
 *.log
 .vscode/*
@@ -17,3 +18,4 @@ playwright/.cache
 .idea
 
 .vercel
+.env*.local

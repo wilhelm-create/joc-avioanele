@@ -3,18 +3,39 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
-    <meta name="theme-color" content="#1a1440" />
+    <meta name="theme-color" content="#0d0a1f" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#0d0a1f" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Avioane" />
+    <meta name="format-detection" content="telephone=no" />
     <meta
       name="description"
-      content="Avioane — joc multiplayer pe grilă 10×10. Creează cont și joacă din browser pe telefon, tabletă sau desktop."
+      content="Avioane — joc multiplayer pe grilă 10×10. Creează cont și joacă de pe telefon ca o aplicație."
     />
-    <title>Avioane — Joacă online cu prietenii</title>
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <title>Avioane</title>
+    <style>
+      /* instant native shell before CSS loads */
+      html, body {
+        margin: 0;
+        background: #0d0a1f;
+        color: #f3f0ff;
+        min-height: 100%;
+        min-height: 100dvh;
+        overscroll-behavior: none;
+      }
+      #app { min-height: 100dvh; }
+    </style>
   </head>
-  <body>
+  <body class="app-shell">
     <a class="skip-link" href="#main">Sari la conținut</a>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>

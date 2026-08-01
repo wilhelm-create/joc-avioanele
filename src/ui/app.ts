@@ -31,6 +31,7 @@ import {
   getInviteCodeFromLocation,
   openNativeSms,
 } from '../invite/url'
+import { getLang, onLangChange, setLang, t } from '../i18n'
 
 type UiPhase =
   | 'boot'
@@ -74,7 +75,8 @@ function paint() {
 
 export async function mountApp(root: HTMLElement) {
   rootEl = root
-  document.body.classList.add('site-body')
+  document.body.classList.add('site-body', 'app-shell')
+  onLangChange(() => paint())
 
   const stars = document.createElement('div')
   stars.className = 'stars'
@@ -133,7 +135,7 @@ export async function mountApp(root: HTMLElement) {
 async function acceptPendingInvite() {
   const code = pendingInviteCode
   if (!code || !currentUser) return
-  statusNote = `Te conectezi la camera ${code}…`
+  statusNote = t('connectingRoom', { code })
   uiPhase = 'online-lobby'
   paint()
   try {
@@ -184,8 +186,8 @@ function handleServer(msg: ServerMessage) {
       }
       statusNote =
         msg.room.players.length < 2
-          ? 'Camera e gata. Invită prietenul — el joacă de pe device-ul lui.'
-          : `Cameră ${roomCode} · amândoi sunteți conectați`
+          ? t('roomReadyInvite')
+          : t('roomBothConnected', { code: roomCode })
       if (msg.room.players.length < 2 && uiPhase !== 'placement' && uiPhase !== 'battle') {
         uiPhase = 'online-lobby'
       }
@@ -193,7 +195,7 @@ function handleServer(msg: ServerMessage) {
       break
     case 'both-joined':
       roomInfo = msg.room
-      statusNote = 'Prietenul s-a conectat! Fiecare plasează avioanele pe device-ul lui.'
+      statusNote = t('friendJoined')
       engine.mode = myOnlineRole === 'p1' ? 'online-host' : 'online-join'
       if (roomInfo) {
         const p1 = roomInfo.players.find((p) => p.role === 'p1')
@@ -207,7 +209,7 @@ function handleServer(msg: ServerMessage) {
       break
     case 'ready':
       roomInfo = msg.room
-      statusNote = 'Adversarul și-a plasat flota. Așteaptă…'
+      statusNote = t('opponentFleetReady')
       if (engine.phase === 'placement') {
         // stay on placement or waiting
         const me = myOnlineRole ?? 'p1'
@@ -223,8 +225,8 @@ function handleServer(msg: ServerMessage) {
       engine.turn = 1
       engine.message =
         myOnlineRole === 'p1'
-          ? 'Bătălia începe — e tura ta!'
-          : `Bătălia începe — așteaptă ca ${engine.p1.name} să tragă`
+          ? t('battleStartYou')
+          : t('battleStartWait', { name: engine.p1.name })
       uiPhase = 'battle'
       engine.notify()
       break
@@ -255,7 +257,7 @@ function handleServer(msg: ServerMessage) {
       paint()
       break
     case 'peer-left':
-      statusNote = 'Adversarul s-a deconectat. Poți invita din nou din lobby.'
+      statusNote = t('peerLeft')
       if (uiPhase === 'battle' || uiPhase === 'placement') {
         /* keep state visible */
       }
@@ -274,7 +276,7 @@ function handleServer(msg: ServerMessage) {
 function view(): HTMLElement {
   switch (uiPhase) {
     case 'boot':
-      return shell(el('div', { className: 'screen center' }, [el('p', { className: 'hint', text: 'Se încarcă…' })]))
+      return shell(el('div', { className: 'screen center' }, [el('p', { className: 'hint', text: t('loading') })]))
     case 'auth':
       return shell(authScreen())
     case 'home':
@@ -306,6 +308,25 @@ function shell(content: HTMLElement): HTMLElement {
   return page
 }
 
+function langToggle(): HTMLElement {
+  const wrap = el('div', { className: 'lang-toggle', role: 'group', 'aria-label': t('switchLang') })
+  for (const lang of ['ro', 'en'] as const) {
+    wrap.appendChild(
+      el('button', {
+        type: 'button',
+        className: `lang-btn ${getLang() === lang ? 'active' : ''}`,
+        text: lang === 'ro' ? t('langRo') : t('langEn'),
+        'data-lang': lang,
+        onClick: () => {
+          setLang(lang)
+          paint()
+        },
+      }),
+    )
+  }
+  return wrap
+}
+
 function siteHeader(): HTMLElement {
   const header = el('header', { className: 'site-header' })
   const brand = el('button', {
@@ -317,21 +338,22 @@ function siteHeader(): HTMLElement {
         paint()
       }
     },
-  }, [el('span', { className: 'brand-mark', text: '✈' }), el('span', { text: 'Avioane' })])
+  }, [el('span', { className: 'brand-mark', text: '✈' }), el('span', { text: t('appName') })])
 
   const right = el('div', { className: 'header-actions' })
+  right.appendChild(langToggle())
   if (currentUser) {
     right.appendChild(
       el('span', {
         className: 'user-chip',
         text: `${currentUser.username} · ${currentUser.wins}W`,
-        title: 'Contul tău',
+        title: t('yourAccount'),
       }),
     )
     right.appendChild(
       el('button', {
         className: 'btn btn-ghost btn-sm',
-        text: 'Clasament',
+        text: t('leaderboard'),
         onClick: async () => {
           leaders = await fetchLeaderboard().catch(() => [])
           uiPhase = 'leaderboard'
@@ -342,7 +364,7 @@ function siteHeader(): HTMLElement {
     right.appendChild(
       el('button', {
         className: 'btn btn-ghost btn-sm',
-        text: 'Ieșire',
+        text: t('logout'),
         'data-action': 'logout',
         onClick: () => {
           socket.close()
@@ -360,17 +382,17 @@ function siteHeader(): HTMLElement {
 
 function siteFooter(): HTMLElement {
   return el('footer', { className: 'site-footer' }, [
-    el('span', { text: 'Site web · joacă din browser pe telefon, tabletă sau desktop' }),
+    el('span', { text: t('footer') }),
   ])
 }
 
 function authScreen(): HTMLElement {
-  const title = authMode === 'login' ? 'Autentificare' : 'Creează cont'
+  const title = authMode === 'login' ? t('authTitleLogin') : t('authTitleRegister')
   const screen = el('div', { className: 'screen auth-screen', 'data-screen': 'auth' }, [
-    el('h1', { className: 'logo', text: '✈ Avioane' }),
+    el('h1', { className: 'logo', text: '✈ ' + t('appName') }),
     el('p', {
       className: 'tagline',
-      text: 'Site de joc multiplayer. Creează un cont ca să joci cu prietenii pe orice device.',
+      text: t('authTagline'),
     }),
     el('div', { className: 'card auth-card' }, [
       el('h2', { text: title }),
@@ -379,7 +401,7 @@ function authScreen(): HTMLElement {
           className: `tab ${authMode === 'login' ? 'active' : ''}`,
           type: 'button',
           'data-action': 'tab-login',
-          text: 'Intră în cont',
+          text: t('tabLogin'),
           onClick: () => {
             authMode = 'login'
             authError = ''
@@ -390,7 +412,7 @@ function authScreen(): HTMLElement {
           className: `tab ${authMode === 'register' ? 'active' : ''}`,
           type: 'button',
           'data-action': 'tab-register',
-          text: 'Cont nou',
+          text: t('tabRegister'),
           onClick: () => {
             authMode = 'register'
             authError = ''
@@ -407,8 +429,8 @@ function authScreen(): HTMLElement {
     id: 'auth-user',
     autocomplete: authMode === 'login' ? 'username' : 'nickname',
     maxlength: '20',
-    placeholder: 'username',
-    'aria-label': 'Username',
+    placeholder: t('username'),
+    'aria-label': t('username'),
   }) as HTMLInputElement
   userInput.value = authUserDraft
   userInput.addEventListener('input', () => {
@@ -419,8 +441,8 @@ function authScreen(): HTMLElement {
     id: 'auth-pass',
     autocomplete: authMode === 'login' ? 'current-password' : 'new-password',
     maxlength: '64',
-    placeholder: 'parolă (min. 6)',
-    'aria-label': 'Parolă',
+    placeholder: t('passwordPlaceholder'),
+    'aria-label': t('password'),
   }) as HTMLInputElement
   passInput.value = authPassDraft
   passInput.addEventListener('input', () => {
@@ -428,8 +450,8 @@ function authScreen(): HTMLElement {
   })
 
   card.append(
-    el('div', { className: 'field' }, [el('label', { for: 'auth-user', text: 'Username' }), userInput]),
-    el('div', { className: 'field' }, [el('label', { for: 'auth-pass', text: 'Parolă' }), passInput]),
+    el('div', { className: 'field' }, [el('label', { for: 'auth-user', text: t('username') }), userInput]),
+    el('div', { className: 'field' }, [el('label', { for: 'auth-pass', text: t('password') }), passInput]),
   )
 
   if (authError) card.appendChild(el('div', { className: 'banner hit', text: authError }))
@@ -440,7 +462,7 @@ function authScreen(): HTMLElement {
       type: 'button',
       'data-action': 'auth-submit',
       disabled: authBusy,
-      text: authBusy ? 'Se procesează…' : authMode === 'login' ? 'Intră' : 'Înregistrează-te',
+      text: authBusy ? t('processing') : authMode === 'login' ? t('btnLogin') : t('btnRegister'),
       onClick: async () => {
         authUserDraft = userInput.value
         authPassDraft = passInput.value
@@ -474,7 +496,7 @@ function authScreen(): HTMLElement {
     card.appendChild(
       el('div', {
         className: 'banner',
-        text: `Ai fost invitat în camera ${pendingInviteCode}. Autentifică-te ca să intri.`,
+        text: t('inviteBanner', { code: pendingInviteCode }),
       }),
     )
   }
@@ -485,39 +507,39 @@ function authScreen(): HTMLElement {
 function homeScreen(): HTMLElement {
   const u = currentUser!
   return el('div', { className: 'screen', 'data-screen': 'home' }, [
-    el('h1', { className: 'logo', text: '✈ Avioane' }),
+    el('h1', { className: 'logo', text: '✈ ' + t('appName') }),
     el('p', {
       className: 'tagline',
-      text: `Salut, ${u.username}! Invită un prieten — el joacă de pe device-ul lui, de acasă sau de oriunde.`,
+      text: t('hello', { name: u.username }),
     }),
     el('div', { className: 'stats-row' }, [
-      statCard(String(u.wins), 'victorii'),
-      statCard(String(u.losses), 'înfrângeri'),
-      statCard(String(u.gamesPlayed), 'meciuri'),
+      statCard(String(u.wins), t('wins')),
+      statCard(String(u.losses), t('losses')),
+      statCard(String(u.gamesPlayed), t('games')),
     ]),
     el('div', { className: 'card grid-actions' }, [
       el('button', {
         className: 'btn btn-primary btn-block',
         'data-action': 'invite',
-        text: '📨 Invită un prieten (SMS / link)',
+        text: t('inviteFriend'),
         onClick: () => void startOnlineHost(),
       }),
       el('button', {
         className: 'btn btn-sky btn-block',
         'data-action': 'join-code',
-        text: '🔗 Am un cod / link de invitație',
+        text: t('haveCode'),
         onClick: () => {
           roomInfo = null
           roomCode = ''
           engine.mode = 'online-join'
-          statusNote = 'Lipește codul camerei din SMS sau link'
+          statusNote = t('pasteCodeHint')
           uiPhase = 'online-lobby'
           paint()
         },
       }),
       el('button', {
         className: 'btn btn-ghost btn-block',
-        text: 'Clasament',
+        text: t('leaderboard'),
         onClick: async () => {
           leaders = await fetchLeaderboard().catch(() => [])
           uiPhase = 'leaderboard'
@@ -526,9 +548,9 @@ function homeScreen(): HTMLElement {
       }),
     ]),
     el('div', { className: 'cookie-bar' }, [
-      el('span', { className: 'cookie-chip', text: '🍪 Radar o dată / joc' }),
-      el('span', { className: 'cookie-chip', text: '🍪 Glitter burst' }),
-      el('span', { className: 'cookie-chip', text: '🍪 Fanfară victorie' }),
+      el('span', { className: 'cookie-chip', text: t('cookieRadar') }),
+      el('span', { className: 'cookie-chip', text: t('cookieGlitter') }),
+      el('span', { className: 'cookie-chip', text: t('cookieFanfare') }),
     ]),
   ])
 }
@@ -543,7 +565,7 @@ function statCard(n: string, l: string) {
 async function startOnlineHost() {
   inviteSmsNote = ''
   copyLinkNote = ''
-  statusNote = 'Se pregătește camera de joc…'
+  statusNote = t('preparingRoom')
   uiPhase = 'online-lobby'
   paint()
   try {
@@ -571,8 +593,8 @@ function onlineLobbyScreen(): HTMLElement {
       el('p', {
         className: 'hint',
         text: isHostLobby
-          ? 'Camera e gata. Prietenul joacă de pe telefonul/tableta/PC-ul lui — nu îi dai device-ul tău.'
-          : 'Ești în cameră. Așteaptă gazda și pregătirea partidei…',
+          ? t('lobbyHostHint')
+          : t('lobbyGuestHint'),
       }),
       el('div', { className: 'room-code', 'data-room': roomCode, text: roomCode }),
     )
@@ -583,7 +605,7 @@ function onlineLobbyScreen(): HTMLElement {
         id: 'invite-link',
         readonly: 'true',
         value: link,
-        'aria-label': 'Link invitație',
+        'aria-label': t('inviteLinkLabel'),
       }) as HTMLInputElement
       linkInput.value = link
       linkInput.readOnly = true
@@ -592,8 +614,8 @@ function onlineLobbyScreen(): HTMLElement {
         type: 'tel',
         id: 'invite-phone',
         inputmode: 'tel',
-        placeholder: 'ex: +40722123456',
-        'aria-label': 'Număr telefon prieten',
+        placeholder: t('phonePlaceholder'),
+        'aria-label': t('phoneNumber'),
         autocomplete: 'tel',
       }) as HTMLInputElement
       phoneInput.value = invitePhoneDraft
@@ -603,7 +625,7 @@ function onlineLobbyScreen(): HTMLElement {
 
       card.append(
         el('div', { className: 'field' }, [
-          el('label', { for: 'invite-link', text: 'Link cameră (trimite-l oricui)' }),
+          el('label', { for: 'invite-link', text: t('inviteLinkLabel') }),
           linkInput,
         ]),
         el('div', { className: 'btn-row' }, [
@@ -611,14 +633,14 @@ function onlineLobbyScreen(): HTMLElement {
             className: 'btn btn-accent',
             type: 'button',
             'data-action': 'copy-link',
-            text: '📋 Copiază link',
+            text: t('copyLink'),
             onClick: async () => {
               try {
                 await navigator.clipboard.writeText(link)
-                copyLinkNote = 'Link copiat!'
+                copyLinkNote = t('linkCopied')
               } catch {
                 linkInput.select()
-                copyLinkNote = 'Selectează și copiază manual'
+                copyLinkNote = t('copyManual')
               }
               paint()
             },
@@ -627,19 +649,19 @@ function onlineLobbyScreen(): HTMLElement {
             className: 'btn btn-sky',
             type: 'button',
             'data-action': 'share-link',
-            text: '↗ Share',
+            text: t('share'),
             onClick: async () => {
               const text = buildInviteSmsBody(roomCode, currentUser!.username)
               if (navigator.share) {
                 try {
-                  await navigator.share({ title: 'Avioane — invitație', text, url: link })
+                  await navigator.share({ title: t('shareTitle'), text, url: link })
                 } catch {
                   /* cancelled */
                 }
               } else {
                 try {
                   await navigator.clipboard.writeText(text)
-                  copyLinkNote = 'Text invitație copiat'
+                  copyLinkNote = t('inviteTextCopied')
                   paint()
                 } catch {
                   /* ignore */
@@ -649,20 +671,20 @@ function onlineLobbyScreen(): HTMLElement {
           }),
         ]),
         el('hr', { className: 'soft-hr' }),
-        el('h3', { className: 'subhead', text: 'Invită prin SMS' }),
+        el('h3', { className: 'subhead', text: t('inviteSmsTitle') }),
         el('p', {
           className: 'hint',
-          text: 'Chiar dacă prietenul nu e online acum: îi trimiți SMS cu linkul. Când deschide linkul pe device-ul lui, intră direct în cameră.',
+          text: t('inviteSmsHint'),
         }),
         el('div', { className: 'field' }, [
-          el('label', { for: 'invite-phone', text: 'Număr de telefon' }),
+          el('label', { for: 'invite-phone', text: t('phoneNumber') }),
           phoneInput,
         ]),
         el('button', {
           className: 'btn btn-primary btn-block',
           type: 'button',
           'data-action': 'send-sms',
-          text: '💬 Trimite SMS cu linkul camerei',
+          text: t('sendSms'),
           onClick: async () => {
             invitePhoneDraft = phoneInput.value
             inviteSmsNote = ''
@@ -670,15 +692,15 @@ function onlineLobbyScreen(): HTMLElement {
             try {
               const res = await sendInviteSms(invitePhoneDraft, roomCode, link)
               if (res.mode === 'twilio') {
-                inviteSmsNote = 'SMS trimis pe server (Twilio).'
+                inviteSmsNote = t('smsTwilioSent')
               } else {
                 openNativeSms(res.phone || invitePhoneDraft, res.body || body)
-                inviteSmsNote = 'S-a deschis aplicația de mesaje — apasă Trimite.'
+                inviteSmsNote = t('smsAppOpened')
               }
             } catch {
               try {
                 openNativeSms(invitePhoneDraft, body)
-                inviteSmsNote = 'S-a deschis aplicația de mesaje — apasă Trimite.'
+                inviteSmsNote = t('smsAppOpened')
               } catch (e2) {
                 inviteSmsNote = (e2 as Error).message
               }
@@ -695,7 +717,7 @@ function onlineLobbyScreen(): HTMLElement {
       el('ul', { className: 'player-list' }, [
         ...roomInfo!.players.map((p) =>
           el('li', {
-            text: `${p.role === 'p1' ? '① Gazdă' : '② Oaspete'}: ${p.username}${p.ready ? ' ✓ flota gata' : ' …'}`,
+            text: `${p.role === 'p1' ? t('hostLabel') : t('guestLabel')}: ${p.username}${p.ready ? t('fleetReady') : t('waitingDots')}`,
           }),
         ),
       ]),
@@ -703,8 +725,8 @@ function onlineLobbyScreen(): HTMLElement {
         className: 'banner',
         text:
           roomInfo!.players.length < 2
-            ? '⏳ Așteaptă ca prietenul să deschidă linkul pe device-ul lui…'
-            : '✅ Amândoi sunteți online — începe plasarea!',
+            ? t('waitingFriendOpen')
+            : t('bothOnline'),
       }),
     )
   } else if (needJoinForm) {
@@ -712,24 +734,24 @@ function onlineLobbyScreen(): HTMLElement {
       type: 'text',
       id: 'join-code',
       maxlength: '8',
-      placeholder: 'ex: K7M2P',
-      'aria-label': 'Cod cameră',
+      placeholder: t('roomCodePlaceholder'),
+      'aria-label': t('roomCode'),
       style: 'text-transform:uppercase;letter-spacing:0.15em;font-weight:700',
     }) as HTMLInputElement
     card.append(
       el('p', {
         className: 'hint',
-        text: 'Din SMS sau mesaj: deschide linkul, sau introdu codul camerei aici. Joci de pe device-ul tău.',
+        text: t('joinFromSms'),
       }),
-      el('div', { className: 'field' }, [el('label', { for: 'join-code', text: 'Cod cameră' }), codeInput]),
+      el('div', { className: 'field' }, [el('label', { for: 'join-code', text: t('roomCode') }), codeInput]),
       el('button', {
         className: 'btn btn-sky btn-block',
         'data-action': 'join-room',
-        text: 'Intră în cameră',
+        text: t('enterRoom'),
         onClick: async () => {
           const code = codeInput.value.trim().toUpperCase()
           if (code.length < 4) {
-            statusNote = 'Cod invalid'
+            statusNote = t('invalidCode')
             paint()
             return
           }
@@ -739,7 +761,7 @@ function onlineLobbyScreen(): HTMLElement {
       }),
     )
   } else {
-    card.appendChild(el('p', { className: 'hint', text: statusNote || 'Se încarcă lobby-ul…' }))
+    card.appendChild(el('p', { className: 'hint', text: statusNote || t('lobbyLoading') }))
   }
 
   if (statusNote) card.appendChild(el('div', { className: 'banner', text: statusNote }))
@@ -748,7 +770,7 @@ function onlineLobbyScreen(): HTMLElement {
     el('button', {
       className: 'btn btn-ghost btn-block',
       style: 'margin-top:10px',
-      text: 'Anulează / Acasă',
+      text: t('cancelHome'),
       onClick: () => {
         socket.send({ type: 'leave-room' })
         socket.close()
@@ -763,7 +785,7 @@ function onlineLobbyScreen(): HTMLElement {
   )
 
   return el('div', { className: 'screen', 'data-screen': 'online-lobby' }, [
-    el('h2', { text: isHostLobby ? 'Invită & așteaptă' : 'Intră în cameră' }),
+    el('h2', { text: isHostLobby ? t('lobbyInviteTitle') : t('lobbyJoinTitle') }),
     card,
   ])
 }
@@ -771,12 +793,12 @@ function onlineLobbyScreen(): HTMLElement {
 function waitingOpponentScreen(): HTMLElement {
   return el('div', { className: 'screen pass-screen', 'data-screen': 'waiting-opponent' }, [
     el('div', { className: 'pass-icon', text: '⏳' }),
-    el('h2', { text: 'Flota ta e gata' }),
+    el('h2', { text: t('fleetDoneTitle') }),
     el('p', {
       className: 'hint',
-      text: engine.message || 'Așteaptă ca prietenul să termine plasarea pe device-ul lui…',
+      text: engine.message || t('fleetDoneHint'),
     }),
-    el('div', { className: 'banner', text: statusNote || 'Nu trebuie să predai telefonul — aștepți online.' }),
+    el('div', { className: 'banner', text: statusNote || t('noHandoffWait') }),
   ])
 }
 
@@ -790,7 +812,7 @@ function finishPlacementAndNotify(placeFor: PlayerId) {
   const started = engine.markOnlineReady(placeFor)
   if (!started) {
     uiPhase = 'waiting-opponent'
-    statusNote = 'Așteaptă ca prietenul să plaseze flota pe device-ul lui…'
+    statusNote = t('waitFriendPlace')
     paint()
   }
 }
@@ -803,11 +825,11 @@ function placementScreen(): HTMLElement {
   return el('div', { className: 'screen', 'data-screen': 'placement' }, [
     el('div', { className: 'player-pill' }, [
       el('span', { className: 'dot', style: `background:${p.color}` }),
-      el('span', { text: `${p.name} — flota ta ${p.planes.length}/${PLANES_PER_PLAYER}` }),
+      el('span', { text: `${p.name} — ${t('yourFleet')} ${p.planes.length}/${PLANES_PER_PLAYER}` }),
     ]),
     el('div', {
       className: 'banner',
-      text: engine.message || 'Plasează cele 3 avioane pe grila TA. Prietenul face la fel pe device-ul lui.',
+      text: engine.message || t('placeBanner'),
     }),
     boardElement({
       mode: 'own',
@@ -834,7 +856,7 @@ function placementScreen(): HTMLElement {
       el('button', {
         className: 'btn btn-accent',
         'data-action': 'rotate',
-        text: `🔄 Rotește (${engine.placeOrientation}°)`,
+        text: t('rotate', { deg: engine.placeOrientation }),
         onClick: () => {
           engine.rotateGhost()
           buzz(8)
@@ -843,7 +865,7 @@ function placementScreen(): HTMLElement {
       el('button', {
         className: 'btn btn-sky',
         'data-action': 'auto-place',
-        text: '✨ Auto',
+        text: t('auto'),
         onClick: () => {
           engine.placingPlayer = placeFor
           if (engine.autoPlaceRemaining()) {
@@ -855,7 +877,7 @@ function placementScreen(): HTMLElement {
       el('button', {
         className: 'btn btn-ghost',
         'data-action': 'clear',
-        text: 'Șterge',
+        text: t('clear'),
         onClick: () => {
           engine.placingPlayer = placeFor
           engine.clearPlacement()
@@ -864,7 +886,7 @@ function placementScreen(): HTMLElement {
     ]),
     el('p', {
       className: 'hint',
-      text: 'Cabina (◆) e punctul vulnerabil. Nu predai telefonul — fiecare pe device-ul lui.',
+      text: t('cabinHint'),
     }),
   ])
 }
@@ -888,8 +910,8 @@ function battleScreen(): HTMLElement {
               : 'banner radar'
 
   const turnMsg = isMyTurn
-    ? engine.message || 'E tura ta — atacă grila adversarului!'
-    : `Așteaptă — joacă ${engine.player(engine.currentPlayer).name} de pe device-ul lui…`
+    ? engine.message || t('yourTurnAttack')
+    : t('waitPlayer', { name: engine.player(engine.currentPlayer).name })
 
   return el('div', { className: 'screen', 'data-screen': 'battle' }, [
     el('div', { className: 'battle-top' }, [
@@ -899,12 +921,12 @@ function battleScreen(): HTMLElement {
           style: `background:${engine.player(engine.currentPlayer).color}`,
         }),
         el('span', {
-          text: isMyTurn ? 'Tura ta' : `Tura: ${engine.player(engine.currentPlayer).name}`,
+          text: isMyTurn ? t('yourTurn') : t('turnOf', { name: engine.player(engine.currentPlayer).name }),
         }),
       ]),
       el('span', {
         className: 'hint',
-        text: `Tur ${engine.turn} · Doborâte de tine: ${engine.opponent(me).planesSunk}/3`,
+        text: t('turnCount', { turn: engine.turn, sunk: engine.opponent(me).planesSunk }),
       }),
     ]),
     el('div', { className: bannerClass, text: turnMsg }),
@@ -915,7 +937,7 @@ function battleScreen(): HTMLElement {
         interactive: isMyTurn,
         showFleet: false,
         ghost: false,
-        title: isMyTurn ? 'Țintă — atacă aici' : 'Țintă (așteaptă tura ta)',
+        title: isMyTurn ? t('attackHere') : t('targetWait'),
         onCell: (coord, cellEl) => {
           if (!isMyTurn) return
           const result = engine.fire(coord, me)
@@ -931,7 +953,7 @@ function battleScreen(): HTMLElement {
         interactive: false,
         showFleet: true,
         ghost: false,
-        title: 'Flota ta',
+        title: t('yourFleetBoard'),
       }),
     ]),
     el('div', { className: 'toolbar' }, [
@@ -939,7 +961,7 @@ function battleScreen(): HTMLElement {
         className: 'btn btn-sky',
         'data-action': 'radar',
         disabled: myPlayer.radarUsed || !isMyTurn,
-        text: myPlayer.radarUsed ? '📡 Radar folosit' : '📡 Radar (cookie)',
+        text: myPlayer.radarUsed ? t('radarUsed') : t('radarCookie'),
         onClick: () => {
           if (!isMyTurn) return
           const cells = engine.useRadar(me)
@@ -972,23 +994,23 @@ function gameOverScreen(): HTMLElement {
   return el('div', { className: 'screen', 'data-screen': 'game-over' }, [
     el('div', { className: 'victory card' }, [
       el('div', { className: 'trophy', text: '🏆' }),
-      el('h2', { text: winner ? `${winner.name} câștigă!` : 'Joc terminat' }),
+      el('h2', { text: winner ? t('winsTitle', { name: winner.name }) : t('gameOver') }),
       el('p', { className: 'hint', text: engine.message }),
       el('div', { className: 'stats' }, [
         el('div', { className: 'stat' }, [
           el('div', { className: 'n', text: String(engine.turn) }),
-          el('div', { className: 'l', text: 'ture' }),
+          el('div', { className: 'l', text: t('turns') }),
         ]),
         el('div', { className: 'stat' }, [
           el('div', { className: 'n', text: '3' }),
-          el('div', { className: 'l', text: 'avioane doborâte' }),
+          el('div', { className: 'l', text: t('planesDown') }),
         ]),
       ]),
       el('div', { className: 'btn-row' }, [
         el('button', {
           className: 'btn btn-primary',
           'data-action': 'rematch',
-          text: '🔄 Revanșă',
+          text: t('rematch'),
           onClick: () => {
             matchReported = false
             if (engine.mode !== 'local') socket.send({ type: 'rematch' })
@@ -1000,7 +1022,7 @@ function gameOverScreen(): HTMLElement {
         el('button', {
           className: 'btn btn-ghost',
           'data-action': 'menu',
-          text: 'Acasă',
+          text: t('home'),
           onClick: () => {
             socket.send({ type: 'leave-room' })
             socket.close()
@@ -1017,22 +1039,22 @@ function gameOverScreen(): HTMLElement {
 
 function leaderboardScreen(): HTMLElement {
   return el('div', { className: 'screen', 'data-screen': 'leaderboard' }, [
-    el('h2', { text: 'Clasament' }),
+    el('h2', { text: t('leaderboard') }),
     el('div', { className: 'card' }, [
       leaders.length === 0
-        ? el('p', { className: 'hint', text: 'Încă nu sunt jucători pe clasament.' })
+        ? el('p', { className: 'hint', text: t('noLeaders') })
         : el('ol', { className: 'leader-list' }, [
             ...leaders.map((u, i) =>
               el('li', {
                 className: currentUser?.id === u.id ? 'me' : '',
-                text: `${i + 1}. ${u.username} — ${u.wins}W / ${u.losses}L (${u.gamesPlayed} jocuri)`,
+                text: t('leaderLine', { rank: i + 1, name: u.username, wins: u.wins, losses: u.losses, games: u.gamesPlayed }),
               }),
             ),
           ]),
       el('button', {
         className: 'btn btn-ghost btn-block',
         style: 'margin-top:12px',
-        text: '← Înapoi',
+        text: t('back'),
         onClick: () => {
           uiPhase = 'home'
           paint()

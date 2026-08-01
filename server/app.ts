@@ -9,6 +9,7 @@ import {
   getPublic,
   listLeaderboard,
   recordMatch,
+  storageMode,
   type PublicUser,
 } from './db.js'
 import {
@@ -36,12 +37,12 @@ export function createApp() {
     return jwt.sign({ sub: user.id, username: user.username }, JWT_SECRET, { expiresIn: '30d' })
   }
 
-  function authHeaderUser(req: express.Request): PublicUser | null {
+  async function authHeaderUser(req: express.Request): Promise<PublicUser | null> {
     const h = req.headers.authorization
     if (!h?.startsWith('Bearer ')) return null
     try {
       const payload = jwt.verify(h.slice(7), JWT_SECRET) as { sub: string }
-      return getPublic(payload.sub)
+      return await getPublic(payload.sub)
     } catch {
       return null
     }
@@ -52,57 +53,63 @@ export function createApp() {
     res: express.Response,
     next: express.NextFunction,
   ) {
-    const user = authHeaderUser(req)
-    if (!user) {
-      res.status(401).json({ error: 'Neautentificat' })
-      return
-    }
-    ;(req as express.Request & { user: PublicUser }).user = user
-    next()
+    void authHeaderUser(req).then((user) => {
+      if (!user) {
+        res.status(401).json({ error: 'Neautentificat' })
+        return
+      }
+      ;(req as express.Request & { user: PublicUser }).user = user
+      next()
+    })
   }
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, service: 'avioane', platform: process.env.VERCEL ? 'vercel' : 'node' })
+    res.json({
+      ok: true,
+      service: 'avioane',
+      platform: process.env.VERCEL ? 'vercel' : 'node',
+      storage: storageMode(),
+    })
   })
 
-  app.post('/api/auth/register', (req, res) => {
+  app.post('/api/auth/register', async (req, res) => {
     try {
       const { username, password } = req.body as { username?: string; password?: string }
       if (!username || !password) {
         res.status(400).json({ error: 'Username și parolă obligatorii' })
         return
       }
-      const user = createUser(username, password)
+      const user = await createUser(username, password)
       res.status(201).json({ user, token: signToken(user) })
     } catch (e) {
       res.status(400).json({ error: (e as Error).message })
     }
   })
 
-  app.post('/api/auth/login', (req, res) => {
+  app.post('/api/auth/login', async (req, res) => {
     try {
       const { username, password } = req.body as { username?: string; password?: string }
       if (!username || !password) {
         res.status(400).json({ error: 'Username și parolă obligatorii' })
         return
       }
-      const user = verifyLogin(username, password)
+      const user = await verifyLogin(username, password)
       res.json({ user, token: signToken(user) })
     } catch (e) {
       res.status(401).json({ error: (e as Error).message })
     }
   })
 
-  app.get('/api/auth/me', requireAuth, (req, res) => {
+  app.get('/api/auth/me', requireAuth, async (req, res) => {
     const user = (req as express.Request & { user: PublicUser }).user
-    res.json({ user: getPublic(user.id) })
+    res.json({ user: await getPublic(user.id) })
   })
 
-  app.get('/api/leaderboard', (_req, res) => {
-    res.json({ leaders: listLeaderboard(25) })
+  app.get('/api/leaderboard', async (_req, res) => {
+    res.json({ leaders: await listLeaderboard(25) })
   })
 
-  app.post('/api/match/result', requireAuth, (req, res) => {
+  app.post('/api/match/result', requireAuth, async (req, res) => {
     const user = (req as express.Request & { user: PublicUser }).user
     const { winnerId, loserId } = req.body as { winnerId?: string; loserId?: string }
     if (!winnerId || !loserId) {
@@ -113,7 +120,7 @@ export function createApp() {
       res.status(403).json({ error: 'Nu poți raporta un meci străin' })
       return
     }
-    recordMatch(winnerId, loserId)
+    await recordMatch(winnerId, loserId)
     res.json({ ok: true })
   })
 

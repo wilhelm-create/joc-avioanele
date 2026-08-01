@@ -1,5 +1,7 @@
 /** Invite deep-link helpers */
 
+import { t } from '../i18n'
+
 export function getInviteCodeFromLocation(): string | null {
   try {
     const u = new URL(window.location.href)
@@ -21,13 +23,13 @@ export function buildInviteUrl(roomCode: string): string {
 
 export function buildInviteSmsBody(roomCode: string, hostName: string): string {
   const link = buildInviteUrl(roomCode)
-  return `✈ Avioane: ${hostName} te invită la o partidă! Deschide linkul (creează cont dacă e nevoie) și joacă de pe telefonul tău: ${link}`
+  return t('smsBody', { host: hostName, link })
 }
 
 /** Opens the native SMS composer (works even if the friend is offline now). */
 export function openNativeSms(phone: string, body: string) {
   const digits = phone.replace(/[^\d+]/g, '')
-  if (!digits) throw new Error('Introdu un număr de telefon valid')
+  if (!digits) throw new Error(t('invalidPhone'))
   const encoded = encodeURIComponent(body)
   // iOS prefers &body= after ?; Android accepts ?body=
   const href = `sms:${digits}?body=${encoded}`

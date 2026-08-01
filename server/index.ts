@@ -38,18 +38,19 @@ wss.on('connection', (ws: AuthedSocket, req) => {
     ws.close()
     return
   }
-  try {
-    const payload = jwt.verify(token, JWT_SECRET) as { sub: string; username: string }
-    const user = getPublic(payload.sub)
-    if (!user) throw new Error('user')
-    ws.userId = user.id
-    ws.username = user.username
-    send(ws, { type: 'welcome', user })
-  } catch {
-    send(ws, { type: 'error', error: 'Token invalid' })
-    ws.close()
-    return
-  }
+  void (async () => {
+    try {
+      const payload = jwt.verify(token, JWT_SECRET) as { sub: string; username: string }
+      const user = await getPublic(payload.sub)
+      if (!user) throw new Error('user')
+      ws.userId = user.id
+      ws.username = user.username
+      send(ws, { type: 'welcome', user })
+    } catch {
+      send(ws, { type: 'error', error: 'Token invalid' })
+      ws.close()
+    }
+  })()
 
   ws.on('message', (raw) => {
     let msg: { type: string; [k: string]: unknown }

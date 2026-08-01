@@ -12,6 +12,7 @@ import type {
   ShotResult,
 } from './types'
 import { GRID, key, PLANES_PER_PLAYER, label } from './types'
+import { t } from '../i18n'
 
 const COLORS = {
   p1: '#a78bfa', // violet (no green)
@@ -129,7 +130,7 @@ export class GameEngine {
     this.p2 = emptyPlayer('p2', this.p2.name)
     this.placeOrientation = 0
     this.ghostHead = null
-    this.message = `${this.p1.name}, plasează cele 3 avioane`
+    this.message = t('enginePlacing', { name: this.p1.name })
     this.emit()
   }
 
@@ -138,7 +139,7 @@ export class GameEngine {
     this.p1.name = name.trim() || 'Gazdă'
     this.p2.name = 'Oaspete'
     this.phase = 'online-lobby'
-    this.message = 'Așteaptă prietenul…'
+    this.message = t('preparingRoom')
     this.emit()
   }
 
@@ -147,7 +148,7 @@ export class GameEngine {
     this.p1.name = 'Gazdă'
     this.p2.name = name.trim() || 'Oaspete'
     this.phase = 'online-lobby'
-    this.message = 'Conectare…'
+    this.message = t('preparingRoom')
     this.emit()
   }
 
@@ -162,7 +163,7 @@ export class GameEngine {
     this.p1 = emptyPlayer('p1', keepNames.p1)
     this.p2 = emptyPlayer('p2', keepNames.p2)
     this.placeOrientation = 0
-    this.message = 'Plasează cele 3 avioane pe grila ta'
+    this.message = t('enginePlaceOnline')
     this.emit()
   }
 
@@ -210,7 +211,7 @@ export class GameEngine {
     if (p.planes.length >= PLANES_PER_PLAYER) {
       this.onPlacementComplete(silent)
     } else {
-      this.message = `Avion ${p.planes.length}/${PLANES_PER_PLAYER} plasat. Mai ai ${PLANES_PER_PLAYER - p.planes.length}.`
+      this.message = t('enginePlanePlaced', { n: p.planes.length, total: PLANES_PER_PLAYER, left: PLANES_PER_PLAYER - p.planes.length })
     }
     this.ghostHead = null
     if (!silent) this.emit()
@@ -225,7 +226,7 @@ export class GameEngine {
     while (p.planes.length < PLANES_PER_PLAYER) {
       const result = randomPlacement(this.occupiedSet(p))
       if (!result) {
-        this.message = 'Nu am găsit loc liber — încearcă din nou sau roteste manual'
+        this.message = t('engineNoSpace')
         this.emit()
         return false
       }
@@ -244,7 +245,7 @@ export class GameEngine {
     const p = this.player(this.placingPlayer)
     p.planes = []
     p.fleet.clear()
-    this.message = 'Grila ștearsă — plasează din nou'
+    this.message = t('engineGridCleared')
     this.emit()
   }
 
@@ -264,7 +265,7 @@ export class GameEngine {
       return
     }
     // online: wait for both — external multiplayer sync handles transition
-    this.message = 'Flota e gata. Așteaptă adversarul…'
+    this.message = t('engineFleetReady')
     if (!silent) this.emit()
   }
 
@@ -293,11 +294,11 @@ export class GameEngine {
       this.phase = 'battle'
       this.currentPlayer = 'p1'
       this.turn = 1
-      this.message = `Bătălia începe! Atacă ${this.p1.name}`
+      this.message = t('engineBattleStart', { name: this.p1.name })
       this.emit()
       return true
     }
-    this.message = who === 'p1' ? 'Gazdă gata — așteaptă oaspetele' : 'Oaspete gata — așteaptă gazda'
+    this.message = who === 'p1' ? t('engineHostReady') : t('engineGuestReady')
     this.emit()
     return false
   }
@@ -322,13 +323,13 @@ export class GameEngine {
     const k = key(at.r, at.c)
 
     if (shooter.fired.has(k) && shooter.fired.get(k) !== 'radar') {
-      this.message = 'Ai mai tras aici — alege altă celulă'
+      this.message = t('engineAlreadyShot')
       this.emit()
       return { coord: at, kind: 'already' }
     }
     // allow firing on radar-revealed water (it's still a miss confirmation) — but radar marks empty
     if (shooter.fired.get(k) === 'miss' || shooter.fired.get(k) === 'hit' || shooter.fired.get(k) === 'sunk') {
-      this.message = 'Ai mai tras aici'
+      this.message = t('engineAlreadyHere')
       this.emit()
       return { coord: at, kind: 'already' }
     }
@@ -340,7 +341,7 @@ export class GameEngine {
       shooter.fired.set(k, 'miss')
       target.received.set(k, 'miss')
       result = { coord: at, kind: 'miss' }
-      this.message = `${label(at)} — apă!`
+      this.message = t('engineMiss', { cell: label(at) })
     } else {
       const plane = target.planes[fleetCell.planeId]
       if (plane.sunk) {
@@ -363,12 +364,12 @@ export class GameEngine {
           planeId: plane.id,
           sunkCells,
         }
-        this.message = `${label(at)} — CABINĂ! Avion doborât! (${target.planesSunk}/3)`
+        this.message = t('engineSunk', { cell: label(at), n: target.planesSunk })
       } else {
         shooter.fired.set(k, 'hit')
         target.received.set(k, 'hit')
         result = { coord: at, kind: 'hit', planeId: plane.id }
-        this.message = `${label(at)} — lovit!`
+        this.message = t('engineHit', { cell: label(at) })
       }
     }
 
@@ -377,7 +378,7 @@ export class GameEngine {
     if (target.planesSunk >= PLANES_PER_PLAYER) {
       this.winner = shooterId
       this.phase = 'game-over'
-      this.message = `${shooter.name} câștigă! Toate avioanele au fost doborâte.`
+      this.message = t('engineWin', { name: shooter.name })
       this.emit()
       return result
     }
@@ -391,7 +392,7 @@ export class GameEngine {
     } else {
       this.currentPlayer = shooterId === 'p1' ? 'p2' : 'p1'
       this.turn++
-      this.message = `Rândul lui ${this.player(this.currentPlayer).name}`
+      this.message = t('engineTurn', { name: this.player(this.currentPlayer).name })
     }
 
     this.emit()
@@ -408,7 +409,7 @@ export class GameEngine {
     const shooter = this.player(id)
     const target = this.opponent(id)
     if (shooter.radarUsed) {
-      this.message = 'Radarul a fost deja folosit'
+      this.message = t('engineRadarUsed')
       this.emit()
       return []
     }
@@ -439,8 +440,8 @@ export class GameEngine {
     this.lastRadar = revealed
     this.message =
       revealed.length > 0
-        ? `📡 Radar: ${revealed.length} zone de apă confirmate!`
-        : 'Radar: nu a mai rămas apă necunoscută'
+        ? t('engineRadarOk', { n: revealed.length })
+        : t('engineRadarEmpty')
     this.emit()
     return revealed
   }
@@ -459,7 +460,7 @@ export class GameEngine {
       return
     }
     this.phase = 'battle'
-    this.message = `Rândul lui ${this.player(this.currentPlayer).name} — atacă!`
+    this.message = t('engineAttackTurn', { name: this.player(this.currentPlayer).name })
     this.emit()
   }
 
