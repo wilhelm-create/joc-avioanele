@@ -2,9 +2,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import bcrypt from 'bcryptjs'
+import os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DATA_DIR = path.join(__dirname, '..', 'data')
+/** On Vercel the app FS is read-only; persist under /tmp (warm instances keep data). */
+const DATA_DIR = process.env.VERCEL
+  ? path.join(os.tmpdir(), 'avioane-data')
+  : path.join(__dirname, '..', 'data')
 const USERS_FILE = path.join(DATA_DIR, 'users.json')
 
 export interface UserRecord {
@@ -38,6 +42,7 @@ function ensureStore(): DbShape {
 }
 
 function save(db: DbShape) {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true })
   fs.writeFileSync(USERS_FILE, JSON.stringify(db, null, 2), 'utf8')
 }
 

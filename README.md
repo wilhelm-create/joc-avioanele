@@ -22,18 +22,24 @@ npm run dev
 ```
 
 Deschide **http://localhost:5173**  
-API + WebSocket: **http://localhost:3000** (proxy din Vite: `/api`, `/ws`).
+API: **http://localhost:3000** (proxy Vite: `/api`). Multiplayer online folosește HTTP polling (compatibil Vercel).
 
 Copiază `.env.example` → `.env` și setează un `JWT_SECRET` propriu pentru producție.
 
-## Producție
+## Deploy
 
+### Vercel
+```bash
+npx vercel --prod
+```
+Setează env `JWT_SECRET` în dashboard Vercel (Production).
+
+### Node self-host
 ```bash
 npm run build
 npm start
 ```
 
-Serverul Express servește `dist/` + API pe `PORT` (default 3000).
 
 ## Teste
 
