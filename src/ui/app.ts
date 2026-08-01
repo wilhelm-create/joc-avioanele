@@ -610,11 +610,6 @@ function homeScreen(): HTMLElement {
         },
       }),
     ]),
-    el('div', { className: 'cookie-bar' }, [
-      el('span', { className: 'cookie-chip', text: t('cookieRadar') }),
-      el('span', { className: 'cookie-chip', text: t('cookieGlitter') }),
-      el('span', { className: 'cookie-chip', text: t('cookieFanfare') }),
-    ]),
   ])
 }
 
