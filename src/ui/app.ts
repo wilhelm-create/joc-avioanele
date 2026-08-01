@@ -143,12 +143,14 @@ function mapRoomError(msg: string): string {
   if (m === 'ROOM_NOT_FOUND' || /nu există|does not exist/i.test(m)) return t('roomNotFound')
   if (m === 'ROOM_FULL' || /plină|full/i.test(m)) return t('roomFull')
   if (m === 'NOT_IN_ROOM') return t('notInRoom')
+  if (m === 'ROOM_SAVE_FAILED') return t('roomSaveFailed')
   return msg
 }
 
-async function acceptPendingInvite(retries = 2) {
-  const code = pendingInviteCode
+async function acceptPendingInvite(retries = 4) {
+  const code = (pendingInviteCode || '').toUpperCase().trim()
   if (!code || !currentUser) return
+  pendingInviteCode = code
   statusNote = t('connectingRoom', { code })
   uiPhase = 'online-lobby'
   paint()
@@ -157,19 +159,16 @@ async function acceptPendingInvite(retries = 2) {
     engine.mode = 'online-join'
     myOnlineRole = 'p2'
     roomCode = code
-    // join via HTTP immediately (more reliable than fire-and-forget send)
     await joinRoomHttp(code)
     clearInviteFromUrl()
     pendingInviteCode = null
   } catch (e) {
     const raw = (e as Error).message
     if (retries > 0 && /ROOM_NOT_FOUND|nu există/i.test(raw)) {
-      // brief wait in case host write is still propagating
-      await new Promise((r) => setTimeout(r, 800))
+      await new Promise((r) => setTimeout(r, 600))
       return acceptPendingInvite(retries - 1)
     }
     statusNote = mapRoomError(raw)
-    // keep pendingInviteCode so user can retry with same invite
     paint()
   }
 }

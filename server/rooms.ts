@@ -1,12 +1,12 @@
 /**
- * Durable rooms for multiplayer (Vercel Blob or local file).
- * In-memory-only broke invites: guest hit a different serverless instance.
+ * Durable multiplayer rooms — one Blob (or local file) per room code.
+ * Avoids last-write-wins corruption from a single shared rooms.json on serverless.
  */
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { get, put } from '@vercel/blob'
+import { del, get, put } from '@vercel/blob'
 
 export type Role = 'p1' | 'p2'
 
@@ -45,33 +45,30 @@ interface RoomJSON {
   createdAt: number
 }
 
-interface RoomsFile {
-  rooms: RoomJSON[]
-}
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const LOCAL_DIR = path.join(__dirname, '..', 'data')
-const LOCAL_FILE = path.join(LOCAL_DIR, 'rooms.json')
-const BLOB_PATH = 'avioane-rooms.json'
-const MAX_AGE_MS = 2 * 60 * 60 * 1000
+const LOCAL_DIR = path.join(__dirname, '..', 'data', 'rooms')
+const MAX_AGE_MS = 4 * 60 * 60 * 1000 // 4h invite window
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
 const useBlob = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN)
 
-/** serialize lock: queue writes so concurrent requests don't clobber */
-let chain: Promise<void> = Promise.resolve()
-
-function withLock<T>(fn: () => Promise<T>): Promise<T> {
-  const run = chain.then(fn, fn)
-  chain = run.then(
-    () => undefined,
-    () => undefined,
-  )
-  return run
+function roomPath(code: string) {
+  return `avioane-room-${code.toUpperCase()}.json`
 }
 
-function emptyFile(): RoomsFile {
-  return { rooms: [] }
+function playerPath(userId: string) {
+  // keep pathname filesystem-safe
+  const safe = userId.replace(/[^a-zA-Z0-9_-]/g, '')
+  return `avioane-player-${safe}.json`
+}
+
+function localRoomFile(code: string) {
+  return path.join(LOCAL_DIR, `${code.toUpperCase()}.json`)
+}
+
+function localPlayerFile(userId: string) {
+  const safe = userId.replace(/[^a-zA-Z0-9_-]/g, '')
+  return path.join(LOCAL_DIR, `player-${safe}.json`)
 }
 
 function roomToJson(room: Room): RoomJSON {
@@ -90,52 +87,35 @@ function roomFromJson(j: RoomJSON): Room {
   return {
     code: j.code,
     hostId: j.hostId,
-    players: new Map(j.players.map((p) => [p.userId, p])),
-    ready: new Set(j.ready),
+    players: new Map((j.players || []).map((p) => [p.userId, p])),
+    ready: new Set(j.ready || []),
     events: j.events || [],
     nextEventId: j.nextEventId || 1,
     createdAt: j.createdAt,
   }
 }
 
-function loadLocal(): RoomsFile {
-  if (!fs.existsSync(LOCAL_DIR)) fs.mkdirSync(LOCAL_DIR, { recursive: true })
-  if (!fs.existsSync(LOCAL_FILE)) {
-    const e = emptyFile()
-    fs.writeFileSync(LOCAL_FILE, JSON.stringify(e), 'utf8')
-    return e
-  }
-  try {
-    return JSON.parse(fs.readFileSync(LOCAL_FILE, 'utf8')) as RoomsFile
-  } catch {
-    return emptyFile()
-  }
+function isExpired(room: Room | RoomJSON): boolean {
+  return Date.now() - room.createdAt > MAX_AGE_MS
 }
 
-function saveLocal(data: RoomsFile) {
-  if (!fs.existsSync(LOCAL_DIR)) fs.mkdirSync(LOCAL_DIR, { recursive: true })
-  fs.writeFileSync(LOCAL_FILE, JSON.stringify(data), 'utf8')
-}
-
-async function loadBlob(): Promise<RoomsFile> {
+async function readBlobJson<T>(pathname: string): Promise<T | null> {
   try {
-    const result = await get(BLOB_PATH, { access: 'private', useCache: false })
-    if (!result || result.statusCode !== 200 || !result.stream) return emptyFile()
+    const result = await get(pathname, { access: 'private', useCache: false })
+    if (!result || result.statusCode !== 200 || !result.stream) return null
     const body = await new Response(result.stream).text()
-    if (!body) return emptyFile()
-    const data = JSON.parse(body) as RoomsFile
-    if (!data || !Array.isArray(data.rooms)) return emptyFile()
-    return data
+    if (!body) return null
+    return JSON.parse(body) as T
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    if (/not found|404|BlobNotFound/i.test(msg)) return emptyFile()
-    console.error('rooms blob load failed', e)
-    return emptyFile()
+    if (/not found|404|BlobNotFound/i.test(msg)) return null
+    console.error('blob read failed', pathname, e)
+    return null
   }
 }
 
-async function saveBlob(data: RoomsFile) {
-  await put(BLOB_PATH, JSON.stringify(data), {
+async function writeBlobJson(pathname: string, data: unknown) {
+  await put(pathname, JSON.stringify(data), {
     access: 'private',
     contentType: 'application/json',
     addRandomSuffix: false,
@@ -143,47 +123,83 @@ async function saveBlob(data: RoomsFile) {
   })
 }
 
-async function loadAll(): Promise<Map<string, Room>> {
-  const file = useBlob() ? await loadBlob() : loadLocal()
-  const map = new Map<string, Room>()
-  const now = Date.now()
-  for (const j of file.rooms) {
-    if (now - j.createdAt > MAX_AGE_MS) continue
-    map.set(j.code.toUpperCase(), roomFromJson(j))
+async function deleteBlob(pathname: string) {
+  try {
+    await del(pathname)
+  } catch {
+    /* ignore */
   }
-  return map
 }
 
-async function saveAll(map: Map<string, Room>) {
-  const file: RoomsFile = {
-    rooms: [...map.values()].map(roomToJson),
+function readLocalJson<T>(file: string): T | null {
+  try {
+    if (!fs.existsSync(file)) return null
+    return JSON.parse(fs.readFileSync(file, 'utf8')) as T
+  } catch {
+    return null
   }
-  if (useBlob()) await saveBlob(file)
-  else saveLocal(file)
 }
 
-function genCode(existing: Map<string, Room>): string {
+function writeLocalJson(file: string, data: unknown) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(data), 'utf8')
+}
+
+function deleteLocal(file: string) {
+  try {
+    if (fs.existsSync(file)) fs.unlinkSync(file)
+  } catch {
+    /* ignore */
+  }
+}
+
+async function loadRoom(code: string): Promise<Room | null> {
+  const key = code.toUpperCase().trim()
+  if (!key) return null
+  const j = useBlob()
+    ? await readBlobJson<RoomJSON>(roomPath(key))
+    : readLocalJson<RoomJSON>(localRoomFile(key))
+  if (!j) return null
+  if (isExpired(j)) {
+    await deleteRoomFiles(key)
+    return null
+  }
+  return roomFromJson(j)
+}
+
+async function saveRoom(room: Room): Promise<void> {
+  const j = roomToJson(room)
+  if (useBlob()) await writeBlobJson(roomPath(room.code), j)
+  else writeLocalJson(localRoomFile(room.code), j)
+}
+
+async function deleteRoomFiles(code: string) {
+  const key = code.toUpperCase()
+  if (useBlob()) await deleteBlob(roomPath(key))
+  else deleteLocal(localRoomFile(key))
+}
+
+async function setPlayerRoom(userId: string, code: string | null) {
+  if (useBlob()) {
+    if (code) await writeBlobJson(playerPath(userId), { code: code.toUpperCase() })
+    else await deleteBlob(playerPath(userId))
+  } else {
+    if (code) writeLocalJson(localPlayerFile(userId), { code: code.toUpperCase() })
+    else deleteLocal(localPlayerFile(userId))
+  }
+}
+
+async function getPlayerRoomCode(userId: string): Promise<string | null> {
+  const j = useBlob()
+    ? await readBlobJson<{ code: string }>(playerPath(userId))
+    : readLocalJson<{ code: string }>(localPlayerFile(userId))
+  return j?.code?.toUpperCase() || null
+}
+
+function genCode(): string {
   let code = ''
   for (let i = 0; i < 5; i++) code += ALPHABET[Math.floor(Math.random() * ALPHABET.length)]
-  if (existing.has(code)) return genCode(existing)
   return code
-}
-
-function touch(p: RoomPlayer) {
-  p.lastSeen = Date.now()
-}
-
-function removeUserFromMap(map: Map<string, Room>, userId: string) {
-  for (const room of map.values()) {
-    if (!room.players.has(userId)) continue
-    room.players.delete(userId)
-    room.ready.delete(userId)
-    if (room.players.size === 0) {
-      map.delete(room.code)
-    } else {
-      pushEventSync(room, userId, '?', { type: 'peer-left', userId })
-    }
-  }
 }
 
 function pushEventSync(
@@ -204,83 +220,157 @@ function pushEventSync(
   return ev
 }
 
+/** Detach user from any previous room, keep room alive for invites even if empty. */
+async function detachUser(userId: string) {
+  const prev = await getPlayerRoomCode(userId)
+  if (!prev) return
+  const room = await loadRoom(prev)
+  if (room?.players.has(userId)) {
+    room.players.delete(userId)
+    room.ready.delete(userId)
+    pushEventSync(room, userId, '?', { type: 'peer-left', userId })
+    await saveRoom(room)
+  }
+  await setPlayerRoom(userId, null)
+}
+
 export async function createRoom(userId: string, username: string): Promise<Room> {
-  return withLock(async () => {
-    const map = await loadAll()
-    removeUserFromMap(map, userId)
-    const code = genCode(map)
-    const room: Room = {
-      code,
-      hostId: userId,
-      players: new Map(),
-      ready: new Set(),
-      events: [],
-      nextEventId: 1,
-      createdAt: Date.now(),
+  // Reuse existing host room if still open (refresh / re-invite)
+  const existingCode = await getPlayerRoomCode(userId)
+  if (existingCode) {
+    const existing = await loadRoom(existingCode)
+    if (existing && existing.hostId === userId) {
+      // ensure host still listed
+      existing.players.set(userId, {
+        userId,
+        username,
+        role: 'p1',
+        lastSeen: Date.now(),
+      })
+      await saveRoom(existing)
+      await setPlayerRoom(userId, existing.code)
+      return existing
     }
-    room.players.set(userId, { userId, username, role: 'p1', lastSeen: Date.now() })
-    map.set(code, room)
-    await saveAll(map)
-    return room
-  })
+  }
+
+  await detachUser(userId)
+
+  // unique code
+  let code = genCode()
+  for (let i = 0; i < 8; i++) {
+    const clash = await loadRoom(code)
+    if (!clash) break
+    code = genCode()
+  }
+
+  const room: Room = {
+    code,
+    hostId: userId,
+    players: new Map(),
+    ready: new Set(),
+    events: [],
+    nextEventId: 1,
+    createdAt: Date.now(),
+  }
+  room.players.set(userId, { userId, username, role: 'p1', lastSeen: Date.now() })
+  await saveRoom(room)
+  await setPlayerRoom(userId, code)
+
+  // verify write (catch silent blob failures)
+  const verify = await loadRoom(code)
+  if (!verify) {
+    throw new Error('ROOM_SAVE_FAILED')
+  }
+  return verify
 }
 
 export async function joinRoom(code: string, userId: string, username: string): Promise<Room> {
-  return withLock(async () => {
-    const map = await loadAll()
-    const key = code.toUpperCase().trim()
-    const room = map.get(key)
-    if (!room) {
-      const err = new Error('ROOM_NOT_FOUND')
-      throw err
-    }
-    if (room.players.has(userId)) {
-      touch(room.players.get(userId)!)
-      await saveAll(map)
-      return room
-    }
-    if (room.players.size >= 2) throw new Error('ROOM_FULL')
-    removeUserFromMap(map, userId)
-    room.players.set(userId, { userId, username, role: 'p2', lastSeen: Date.now() })
-    pushEventSync(room, userId, username, { type: 'player-joined', username })
-    if (room.players.size >= 2) {
-      pushEventSync(room, userId, username, { type: 'both-joined' })
-    }
-    await saveAll(map)
+  const key = code.toUpperCase().trim()
+  if (key.length < 4) throw new Error('ROOM_NOT_FOUND')
+
+  // retry read a few times (eventual consistency)
+  let room: Room | null = null
+  for (let attempt = 0; attempt < 5; attempt++) {
+    room = await loadRoom(key)
+    if (room) break
+    await new Promise((r) => setTimeout(r, 250 * (attempt + 1)))
+  }
+  if (!room) throw new Error('ROOM_NOT_FOUND')
+
+  if (room.players.has(userId)) {
+    const p = room.players.get(userId)!
+    p.lastSeen = Date.now()
+    p.username = username
+    await saveRoom(room)
+    await setPlayerRoom(userId, room.code)
     return room
-  })
+  }
+
+  // host re-joining empty seat
+  if (userId === room.hostId) {
+    room.players.set(userId, { userId, username, role: 'p1', lastSeen: Date.now() })
+    await saveRoom(room)
+    await setPlayerRoom(userId, room.code)
+    return room
+  }
+
+  const nonHostCount = [...room.players.values()].filter((p) => p.role === 'p2').length
+  if (nonHostCount >= 1 || room.players.size >= 2) {
+    // allow if only host missing and one guest? max 2 players
+    if (room.players.size >= 2) throw new Error('ROOM_FULL')
+  }
+
+  await detachUser(userId)
+  room.players.set(userId, { userId, username, role: 'p2', lastSeen: Date.now() })
+  pushEventSync(room, userId, username, { type: 'player-joined', username })
+  if (room.players.size >= 2) {
+    pushEventSync(room, userId, username, { type: 'both-joined' })
+  }
+  await saveRoom(room)
+  await setPlayerRoom(userId, room.code)
+  return room
 }
 
 export async function getRoom(code: string): Promise<Room | undefined> {
-  const map = await loadAll()
-  return map.get(code.toUpperCase())
+  return (await loadRoom(code)) || undefined
 }
 
 export async function getRoomByUser(userId: string): Promise<Room | undefined> {
-  const map = await loadAll()
-  for (const room of map.values()) {
-    if (room.players.has(userId)) return room
+  const code = await getPlayerRoomCode(userId)
+  if (!code) return undefined
+  const room = await loadRoom(code)
+  if (!room) {
+    await setPlayerRoom(userId, null)
+    return undefined
   }
-  return undefined
+  if (!room.players.has(userId) && room.hostId === userId) {
+    // restore host mapping
+    room.players.set(userId, {
+      userId,
+      username: 'Host',
+      role: 'p1',
+      lastSeen: Date.now(),
+    })
+    await saveRoom(room)
+  }
+  if (!room.players.has(userId)) {
+    await setPlayerRoom(userId, null)
+    return undefined
+  }
+  return room
 }
 
 export async function leaveAll(userId: string): Promise<void> {
-  return withLock(async () => {
-    const map = await loadAll()
-    removeUserFromMap(map, userId)
-    await saveAll(map)
-  })
+  // Keep room for invite window — only detach player, don't destroy room
+  await detachUser(userId)
 }
 
 export async function markReady(code: string, userId: string): Promise<boolean> {
-  return withLock(async () => {
-    const map = await loadAll()
-    const room = map.get(code.toUpperCase())
-    if (!room || !room.players.has(userId)) return false
-    room.ready.add(userId)
-    await saveAll(map)
-    return room.ready.size >= 2
-  })
+  const room = await loadRoom(code)
+  if (!room || !room.players.has(userId)) return false
+  room.ready.add(userId)
+  await saveRoom(room)
+  return room.ready.size >= 2
 }
 
 export async function pushEvent(
@@ -289,14 +379,11 @@ export async function pushEvent(
   fromName: string,
   payload: Record<string, unknown>,
 ): Promise<Room | undefined> {
-  return withLock(async () => {
-    const map = await loadAll()
-    const room = map.get(code.toUpperCase())
-    if (!room) return undefined
-    pushEventSync(room, from, fromName, payload)
-    await saveAll(map)
-    return room
-  })
+  const room = await loadRoom(code)
+  if (!room) return undefined
+  pushEventSync(room, from, fromName, payload)
+  await saveRoom(room)
+  return room
 }
 
 export function pollEvents(room: Room, afterId: number): RoomEvent[] {
@@ -315,23 +402,14 @@ export function roomPublic(room: Room) {
   }
 }
 
-/** Lightweight presence — avoid Blob write on every poll. */
 export async function heartbeat(_userId: string): Promise<void> {
-  // no-op: durable rooms don't need frequent lastSeen writes
   void _userId
 }
 
 export async function cleanupRooms(): Promise<void> {
-  return withLock(async () => {
-    const map = await loadAll()
-    // loadAll already drops expired; persist cleaned set
-    await saveAll(map)
-  })
+  // expired rooms are dropped lazily on loadRoom
 }
 
-/** Sync helpers for local WS path that still expects Room objects */
 export function generateCode(): string {
-  let code = ''
-  for (let i = 0; i < 5; i++) code += ALPHABET[Math.floor(Math.random() * ALPHABET.length)]
-  return code
+  return genCode()
 }
