@@ -179,21 +179,55 @@ async function deleteRoomFiles(code: string) {
   else deleteLocal(localRoomFile(key))
 }
 
-async function setPlayerRoom(userId: string, code: string | null) {
-  if (useBlob()) {
-    if (code) await writeBlobJson(playerPath(userId), { code: code.toUpperCase() })
-    else await deleteBlob(playerPath(userId))
-  } else {
-    if (code) writeLocalJson(localPlayerFile(userId), { code: code.toUpperCase() })
-    else deleteLocal(localPlayerFile(userId))
-  }
+/** Player may belong to multiple rooms at once. */
+interface PlayerIndex {
+  /** Multi-room list */
+  codes?: string[]
+  /** Legacy single-room field */
+  code?: string
 }
 
-async function getPlayerRoomCode(userId: string): Promise<string | null> {
+async function getPlayerCodes(userId: string): Promise<string[]> {
   const j = useBlob()
-    ? await readBlobJson<{ code: string }>(playerPath(userId))
-    : readLocalJson<{ code: string }>(localPlayerFile(userId))
-  return j?.code?.toUpperCase() || null
+    ? await readBlobJson<PlayerIndex>(playerPath(userId))
+    : readLocalJson<PlayerIndex>(localPlayerFile(userId))
+  if (!j) return []
+  if (Array.isArray(j.codes) && j.codes.length) {
+    return [...new Set(j.codes.map((c) => String(c).toUpperCase().trim()).filter(Boolean))]
+  }
+  if (j.code) return [String(j.code).toUpperCase().trim()]
+  return []
+}
+
+async function setPlayerCodes(userId: string, codes: string[]): Promise<void> {
+  const unique = [...new Set(codes.map((c) => c.toUpperCase().trim()).filter(Boolean))]
+  if (unique.length === 0) {
+    if (useBlob()) await deleteBlob(playerPath(userId))
+    else deleteLocal(localPlayerFile(userId))
+    return
+  }
+  const data: PlayerIndex = { codes: unique }
+  if (useBlob()) await writeBlobJson(playerPath(userId), data)
+  else writeLocalJson(localPlayerFile(userId), data)
+}
+
+async function addPlayerRoom(userId: string, code: string): Promise<void> {
+  const codes = await getPlayerCodes(userId)
+  const key = code.toUpperCase().trim()
+  if (!codes.includes(key)) codes.push(key)
+  await setPlayerCodes(userId, codes)
+}
+
+async function removePlayerRoom(userId: string, code: string): Promise<void> {
+  const key = code.toUpperCase().trim()
+  const codes = (await getPlayerCodes(userId)).filter((c) => c !== key)
+  await setPlayerCodes(userId, codes)
+}
+
+/** @deprecated prefer getPlayerCodes — returns first room for back-compat */
+async function getPlayerRoomCode(userId: string): Promise<string | null> {
+  const codes = await getPlayerCodes(userId)
+  return codes[0] || null
 }
 
 function genCode(): string {
@@ -220,42 +254,21 @@ function pushEventSync(
   return ev
 }
 
-/** Detach user from any previous room, keep room alive for invites even if empty. */
-async function detachUser(userId: string) {
-  const prev = await getPlayerRoomCode(userId)
-  if (!prev) return
-  const room = await loadRoom(prev)
+/** Detach user from one room (keep room alive for the other player). */
+async function detachFromRoom(userId: string, code: string): Promise<void> {
+  const key = code.toUpperCase().trim()
+  const room = await loadRoom(key)
   if (room?.players.has(userId)) {
     room.players.delete(userId)
     room.ready.delete(userId)
     pushEventSync(room, userId, '?', { type: 'peer-left', userId })
     await saveRoom(room)
   }
-  await setPlayerRoom(userId, null)
+  await removePlayerRoom(userId, key)
 }
 
 export async function createRoom(userId: string, username: string): Promise<Room> {
-  // Reuse existing host room if still open (refresh / re-invite)
-  const existingCode = await getPlayerRoomCode(userId)
-  if (existingCode) {
-    const existing = await loadRoom(existingCode)
-    if (existing && existing.hostId === userId) {
-      // ensure host still listed
-      existing.players.set(userId, {
-        userId,
-        username,
-        role: 'p1',
-        lastSeen: Date.now(),
-      })
-      await saveRoom(existing)
-      await setPlayerRoom(userId, existing.code)
-      return existing
-    }
-  }
-
-  await detachUser(userId)
-
-  // unique code
+  // Always create a NEW room so a player can host multiple games at once
   let code = genCode()
   for (let i = 0; i < 8; i++) {
     const clash = await loadRoom(code)
@@ -274,9 +287,8 @@ export async function createRoom(userId: string, username: string): Promise<Room
   }
   room.players.set(userId, { userId, username, role: 'p1', lastSeen: Date.now() })
   await saveRoom(room)
-  await setPlayerRoom(userId, code)
+  await addPlayerRoom(userId, code)
 
-  // verify write (catch silent blob failures)
   const verify = await loadRoom(code)
   if (!verify) {
     throw new Error('ROOM_SAVE_FAILED')
@@ -302,7 +314,7 @@ export async function joinRoom(code: string, userId: string, username: string): 
     p.lastSeen = Date.now()
     p.username = username
     await saveRoom(room)
-    await setPlayerRoom(userId, room.code)
+    await addPlayerRoom(userId, room.code)
     return room
   }
 
@@ -310,24 +322,20 @@ export async function joinRoom(code: string, userId: string, username: string): 
   if (userId === room.hostId) {
     room.players.set(userId, { userId, username, role: 'p1', lastSeen: Date.now() })
     await saveRoom(room)
-    await setPlayerRoom(userId, room.code)
+    await addPlayerRoom(userId, room.code)
     return room
   }
 
-  const nonHostCount = [...room.players.values()].filter((p) => p.role === 'p2').length
-  if (nonHostCount >= 1 || room.players.size >= 2) {
-    // allow if only host missing and one guest? max 2 players
-    if (room.players.size >= 2) throw new Error('ROOM_FULL')
-  }
+  if (room.players.size >= 2) throw new Error('ROOM_FULL')
 
-  await detachUser(userId)
+  // Do NOT leave other games — multi-game support
   room.players.set(userId, { userId, username, role: 'p2', lastSeen: Date.now() })
   pushEventSync(room, userId, username, { type: 'player-joined', username })
   if (room.players.size >= 2) {
     pushEventSync(room, userId, username, { type: 'both-joined' })
   }
   await saveRoom(room)
-  await setPlayerRoom(userId, room.code)
+  await addPlayerRoom(userId, room.code)
   return room
 }
 
@@ -335,34 +343,109 @@ export async function getRoom(code: string): Promise<Room | undefined> {
   return (await loadRoom(code)) || undefined
 }
 
-export async function getRoomByUser(userId: string): Promise<Room | undefined> {
-  const code = await getPlayerRoomCode(userId)
-  if (!code) return undefined
-  const room = await loadRoom(code)
-  if (!room) {
-    await setPlayerRoom(userId, null)
-    return undefined
+/**
+ * Resolve a room for the user.
+ * @param preferredCode when set, that room (if member); else first valid membership
+ */
+export async function getRoomByUser(
+  userId: string,
+  preferredCode?: string | null,
+): Promise<Room | undefined> {
+  const codes = await getPlayerCodes(userId)
+  if (!codes.length) return undefined
+
+  const tryLoad = async (code: string): Promise<Room | undefined> => {
+    const room = await loadRoom(code)
+    if (!room) {
+      await removePlayerRoom(userId, code)
+      return undefined
+    }
+    if (!room.players.has(userId) && room.hostId === userId) {
+      room.players.set(userId, {
+        userId,
+        username: 'Host',
+        role: 'p1',
+        lastSeen: Date.now(),
+      })
+      await saveRoom(room)
+    }
+    if (!room.players.has(userId)) {
+      await removePlayerRoom(userId, code)
+      return undefined
+    }
+    return room
   }
-  if (!room.players.has(userId) && room.hostId === userId) {
-    // restore host mapping
-    room.players.set(userId, {
-      userId,
-      username: 'Host',
-      role: 'p1',
-      lastSeen: Date.now(),
+
+  if (preferredCode) {
+    const key = preferredCode.toUpperCase().trim()
+    if (codes.includes(key)) {
+      const room = await tryLoad(key)
+      if (room) return room
+    }
+  }
+
+  for (const code of codes) {
+    const room = await tryLoad(code)
+    if (room) return room
+  }
+  return undefined
+}
+
+export type ActiveGameInfo = {
+  code: string
+  role: Role
+  opponentName: string | null
+  opponentUserId: string | null
+  playersCount: number
+  bothReady: boolean
+  status: 'waiting' | 'placing' | 'battle'
+}
+
+/** All non-expired rooms this user is still in (for Active Games UI). */
+export async function listActiveGames(userId: string): Promise<ActiveGameInfo[]> {
+  const codes = await getPlayerCodes(userId)
+  const out: ActiveGameInfo[] = []
+  for (const code of codes) {
+    const room = await loadRoom(code)
+    if (!room) {
+      await removePlayerRoom(userId, code)
+      continue
+    }
+    const me = room.players.get(userId)
+    if (!me && room.hostId !== userId) {
+      await removePlayerRoom(userId, code)
+      continue
+    }
+    const role: Role = me?.role ?? 'p1'
+    const opponent = [...room.players.values()].find((p) => p.userId !== userId) || null
+    let status: ActiveGameInfo['status'] = 'waiting'
+    if (room.ready.size >= 2) status = 'battle'
+    else if (room.players.size >= 2) status = 'placing'
+    out.push({
+      code: room.code,
+      role,
+      opponentName: opponent?.username ?? null,
+      opponentUserId: opponent?.userId ?? null,
+      playersCount: room.players.size,
+      bothReady: room.ready.size >= 2,
+      status,
     })
-    await saveRoom(room)
   }
-  if (!room.players.has(userId)) {
-    await setPlayerRoom(userId, null)
-    return undefined
+  return out
+}
+
+/** Leave one room (or all if code omitted). Rooms stay for the other player. */
+export async function leaveRoom(userId: string, code?: string | null): Promise<void> {
+  if (code) {
+    await detachFromRoom(userId, code)
+    return
   }
-  return room
+  const codes = await getPlayerCodes(userId)
+  for (const c of codes) await detachFromRoom(userId, c)
 }
 
 export async function leaveAll(userId: string): Promise<void> {
-  // Keep room for invite window — only detach player, don't destroy room
-  await detachUser(userId)
+  await leaveRoom(userId, null)
 }
 
 /**

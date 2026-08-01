@@ -1319,6 +1319,82 @@ button.btn-block[data-action='confirm-fleet']:disabled {
   cursor: not-allowed;
 }
 
+/* ——— Active games (multi-match) ——— */
+.active-games-card {
+  margin-bottom: 4px;
+}
+
+.active-games-title {
+  margin: 0 0 10px;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.active-games-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.active-game-row {
+  appearance: none;
+  -webkit-appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--surface, var(--bg-elevated)) 70%, transparent);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: border-color 150ms ease-out, background 150ms ease-out;
+}
+
+.active-game-row:active {
+  transform: scale(0.99);
+}
+
+.active-game-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.active-game-vs {
+  font-weight: 800;
+  font-size: 1rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.active-game-status {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.active-game-go {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--brand);
+  flex-shrink: 0;
+}
+
+@media (hover: hover) {
+  .active-game-row:hover {
+    border-color: color-mix(in oklch, var(--brand) 45%, var(--border));
+    background: color-mix(in oklch, var(--brand) 10%, transparent);
+  }
+}
+
 /* ——— Placement orientation pad (mobile-first, large targets) ——— */
 .orient-pad {
   display: grid;

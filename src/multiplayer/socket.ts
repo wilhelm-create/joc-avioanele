@@ -28,10 +28,20 @@ export interface RoomInfo {
   players: { userId: string; username: string; role: PlayerId; ready: boolean }[]
 }
 
+export interface ActiveGame {
+  code: string
+  role: PlayerId
+  opponentName: string | null
+  opponentUserId: string | null
+  playersCount: number
+  bothReady: boolean
+  status: 'waiting' | 'placing' | 'battle'
+}
+
 export type Outgoing =
   | { type: 'create-room' }
   | { type: 'join-room'; code: string }
-  | { type: 'leave-room' }
+  | { type: 'leave-room'; code?: string }
   | { type: 'ready' }
   | { type: 'placement'; player: PlayerId; data: SerializablePlayer }
   | { type: 'shot'; player: PlayerId; coord: Coord }
@@ -40,20 +50,20 @@ export type Outgoing =
   | { type: 'ping' }
 
 /**
- * HTTP-polling multiplayer with fast battle updates (no full page reload).
+ * HTTP-polling multiplayer. Supports multiple concurrent rooms per user;
+ * only the active room is polled for events.
  */
 export class GameSocket {
   private handlers = new Set<(msg: ServerMessage) => void>()
   connected = false
   private pollTimer: ReturnType<typeof setTimeout> | null = null
-  private afterId = 0
-  private lastPlayerCount = 0
+  /** Currently focused room code */
+  activeCode: string | null = null
+  private afterByRoom = new Map<string, number>()
+  private battleStartedByRoom = new Map<string, boolean>()
+  private lastPlayerCountByRoom = new Map<string, number>()
   private ticking = false
-  /** If a tick was requested while one was in flight, run again after */
   private pendingTick = false
-  /** Avoid re-emitting start-battle every poll once both are ready */
-  private battleStartedEmitted = false
-  /** Faster while in battle / waiting for shots */
   pollMs = 400
 
   private emit(msg: ServerMessage) {
@@ -72,19 +82,30 @@ export class GameSocket {
   }
 
   async connect(): Promise<void> {
-    this.close()
+    if (this.connected) return
     await this.api<{ ok: boolean }>('/api/health')
     this.connected = true
-    this.afterId = 0
-    this.lastPlayerCount = 0
-    this.battleStartedEmitted = false
     this.schedulePoll(0)
     this.emit({ type: 'welcome', user: { id: '', username: '' } })
   }
 
+  /** Focus polling / events on this room (multi-game). */
+  setActiveRoom(code: string | null) {
+    this.activeCode = code ? code.toUpperCase().trim() : null
+  }
+
+  getAfterId(code: string): number {
+    return this.afterByRoom.get(code.toUpperCase()) || 0
+  }
+
+  setAfterId(code: string, id: number) {
+    this.afterByRoom.set(code.toUpperCase(), id)
+  }
+
   private emitStartBattle(room: RoomInfo) {
-    if (this.battleStartedEmitted) return
-    this.battleStartedEmitted = true
+    const key = room.code.toUpperCase()
+    if (this.battleStartedByRoom.get(key)) return
+    this.battleStartedByRoom.set(key, true)
     this.emit({ type: 'start-battle', room })
   }
 
@@ -115,18 +136,25 @@ export class GameSocket {
       this.pendingTick = true
       return
     }
+    // No active room → nothing to poll (home / multi-game idle)
+    if (!this.activeCode) return
+
     this.ticking = true
+    const code = this.activeCode
     try {
+      const after = this.afterByRoom.get(code) || 0
+      const q = new URLSearchParams({ after: String(after), code })
       const data = await this.api<{
         room: RoomInfo | null
         events: Array<Record<string, unknown> & { id: number; type?: string }>
         bothJoined: boolean
         bothReady: boolean
-      }>(`/api/rooms/poll?after=${this.afterId}`)
+      }>(`/api/rooms/poll?${q}`)
 
       if (data.room) {
-        if (data.room.players.length !== this.lastPlayerCount) {
-          this.lastPlayerCount = data.room.players.length
+        const prev = this.lastPlayerCountByRoom.get(code) ?? 0
+        if (data.room.players.length !== prev) {
+          this.lastPlayerCountByRoom.set(code, data.room.players.length)
           this.emit({ type: 'room', room: data.room })
           if (data.bothJoined && data.room.players.length >= 2) {
             this.emit({ type: 'both-joined', room: data.room })
@@ -135,7 +163,9 @@ export class GameSocket {
       }
 
       for (const ev of data.events) {
-        if (typeof ev.id === 'number' && ev.id > this.afterId) this.afterId = ev.id
+        if (typeof ev.id === 'number' && ev.id > (this.afterByRoom.get(code) || 0)) {
+          this.afterByRoom.set(code, ev.id)
+        }
         const type = String(ev.type || '')
         if (type === 'both-joined' && data.room) {
           this.emit({ type: 'both-joined', room: data.room })
@@ -147,7 +177,6 @@ export class GameSocket {
             userId: String(ev.userId || ''),
             room: data.room,
           })
-          // If room already shows both ready (race / missed start-battle event)
           if (data.room.players.filter((p) => p.ready).length >= 2) {
             this.emitStartBattle(data.room)
           }
@@ -184,12 +213,11 @@ export class GameSocket {
         }
       }
 
-      // Critical: bothReady even if start-battle event was filtered (own from) or lost to race
       if (data.bothReady && data.room) {
         this.emitStartBattle(data.room)
       }
     } catch {
-      /* transient network / cold start */
+      /* transient */
     } finally {
       this.ticking = false
       if (this.pendingTick && this.connected) {
@@ -208,6 +236,13 @@ export class GameSocket {
     void this.sendAsync(msg)
   }
 
+  private roomPayload(extra: Record<string, unknown> = {}) {
+    return {
+      ...extra,
+      ...(this.activeCode ? { code: this.activeCode } : {}),
+    }
+  }
+
   private async sendAsync(msg: Outgoing) {
     try {
       if (msg.type === 'create-room') {
@@ -215,10 +250,12 @@ export class GameSocket {
           method: 'POST',
           body: '{}',
         })
-        this.afterId = 0
-        this.lastPlayerCount = data.room.players.length
-        this.battleStartedEmitted = false
+        this.activeCode = data.room.code
+        this.afterByRoom.set(data.room.code, 0)
+        this.battleStartedByRoom.set(data.room.code, false)
+        this.lastPlayerCountByRoom.set(data.room.code, data.room.players.length)
         this.emit({ type: 'room', room: data.room, role: data.role })
+        void this.tick()
         return
       }
       if (msg.type === 'join-room') {
@@ -226,26 +263,38 @@ export class GameSocket {
           method: 'POST',
           body: JSON.stringify({ code: msg.code }),
         })
-        this.afterId = 0
-        this.lastPlayerCount = data.room.players.length
-        this.battleStartedEmitted = false
+        this.activeCode = data.room.code
+        this.afterByRoom.set(data.room.code, 0)
+        this.battleStartedByRoom.set(data.room.code, false)
+        this.lastPlayerCountByRoom.set(data.room.code, data.room.players.length)
         this.emit({ type: 'room', room: data.room, role: data.role })
         if (data.room.players.length >= 2) {
           this.emit({ type: 'both-joined', room: data.room })
         }
+        void this.tick()
         return
       }
       if (msg.type === 'leave-room') {
-        await this.api('/api/rooms/leave', { method: 'POST', body: '{}' })
-        this.battleStartedEmitted = false
+        const code = msg.code || this.activeCode || undefined
+        await this.api('/api/rooms/leave', {
+          method: 'POST',
+          body: JSON.stringify(code ? { code } : {}),
+        })
+        if (code) {
+          this.afterByRoom.delete(code)
+          this.battleStartedByRoom.delete(code)
+          this.lastPlayerCountByRoom.delete(code)
+          if (this.activeCode === code) this.activeCode = null
+        } else {
+          this.activeCode = null
+        }
         this.emit({ type: 'left' })
         return
       }
-      // Ready: use response bothReady — sender never receives own start-battle via poll filter
       if (msg.type === 'ready') {
         const data = await this.api<{ ok: boolean; room: RoomInfo; bothReady: boolean }>(
           '/api/rooms/event',
-          { method: 'POST', body: JSON.stringify(msg) },
+          { method: 'POST', body: JSON.stringify(this.roomPayload(msg as unknown as Record<string, unknown>)) },
         )
         if (data.room) {
           this.emit({ type: 'ready', userId: '', room: data.room })
@@ -256,19 +305,27 @@ export class GameSocket {
       }
       await this.api('/api/rooms/event', {
         method: 'POST',
-        body: JSON.stringify(msg),
+        body: JSON.stringify(this.roomPayload(msg as unknown as Record<string, unknown>)),
       })
-      // pull immediately so both peers stay in sync without waiting for interval
       void this.tick()
     } catch (e) {
       this.emit({ type: 'error', error: (e as Error).message })
     }
   }
 
+  async fetchActiveGames(): Promise<ActiveGame[]> {
+    try {
+      const data = await this.api<{ games: ActiveGame[] }>('/api/rooms/active')
+      return data.games || []
+    } catch {
+      return []
+    }
+  }
+
   close() {
     this.connected = false
     this.stopPoll()
-    this.lastPlayerCount = 0
-    this.battleStartedEmitted = false
+    // keep afterIds so resume works; clear active focus only
+    this.activeCode = null
   }
 }

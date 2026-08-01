@@ -1,5 +1,5 @@
 import { GameEngine } from '../game/engine'
-import type { Coord, Orientation, PlayerId, ShotResult } from '../game/types'
+import type { Coord, GameSnapshot, Orientation, PlayerId, ShotResult } from '../game/types'
 import { COLS, GRID, PLANES_PER_PLAYER } from '../game/types'
 import {
   buzz,
@@ -13,7 +13,12 @@ import {
   screenShake,
   unlockAudio,
 } from '../cookies/effects'
-import { GameSocket, type RoomInfo, type ServerMessage } from '../multiplayer/socket'
+import {
+  GameSocket,
+  type ActiveGame,
+  type RoomInfo,
+  type ServerMessage,
+} from '../multiplayer/socket'
 import {
   fetchLeaderboard,
   fetchMe,
@@ -68,6 +73,128 @@ let rootEl: HTMLElement | null = null
 /** Pending invite from deep link — join after login */
 let pendingInviteCode: string | null = null
 let copyLinkNote = ''
+
+/** Concurrent multi-game sessions (local engine state per room code) */
+interface LocalSession {
+  code: string
+  role: PlayerId
+  snapshot: GameSnapshot
+  uiPhase: UiPhase
+  roomInfo: RoomInfo | null
+  statusNote: string
+  matchReported: boolean
+}
+const sessions = new Map<string, LocalSession>()
+let activeGames: ActiveGame[] = []
+
+function saveActiveSession() {
+  if (!roomCode || !myOnlineRole) return
+  sessions.set(roomCode, {
+    code: roomCode,
+    role: myOnlineRole,
+    snapshot: engine.snapshot(),
+    uiPhase,
+    roomInfo,
+    statusNote,
+    matchReported,
+  })
+}
+
+function clearGameSession(code: string) {
+  sessions.delete(code)
+}
+
+async function refreshActiveGames() {
+  try {
+    if (!socket.connected) await socket.connect()
+    activeGames = await socket.fetchActiveGames()
+  } catch {
+    activeGames = []
+  }
+}
+
+function opponentLabel(g: ActiveGame): string {
+  if (g.opponentName) return g.opponentName
+  const sess = sessions.get(g.code)
+  if (sess) {
+    const other = sess.role === 'p1' ? sess.snapshot.p2.name : sess.snapshot.p1.name
+    if (other && other !== 'P1' && other !== 'P2' && other !== 'Host') return other
+  }
+  return t('waitingOpponentName')
+}
+
+function statusLabel(g: ActiveGame): string {
+  if (g.status === 'battle') return t('statusBattle')
+  if (g.status === 'placing') return t('statusPlacing')
+  return t('statusWaiting')
+}
+
+async function goHome(opts?: { leaveCurrent?: boolean }) {
+  const leave = opts?.leaveCurrent === true
+  if (leave && roomCode) {
+    socket.send({ type: 'leave-room', code: roomCode })
+    clearGameSession(roomCode)
+  } else {
+    saveActiveSession()
+  }
+  socket.setActiveRoom(null)
+  roomCode = ''
+  roomInfo = null
+  myOnlineRole = null
+  statusNote = ''
+  copyLinkNote = ''
+  matchReported = false
+  engine.backToMenu()
+  uiPhase = 'home'
+  await refreshActiveGames()
+  paint()
+}
+
+function resumeSession(code: string): boolean {
+  const s = sessions.get(code)
+  if (!s) return false
+  roomCode = s.code
+  myOnlineRole = s.role
+  roomInfo = s.roomInfo
+  statusNote = s.statusNote
+  matchReported = s.matchReported
+  uiPhase = s.uiPhase === 'boot' || s.uiPhase === 'auth' || s.uiPhase === 'home' ? 'online-lobby' : s.uiPhase
+  engine.loadSnapshot(s.snapshot, true)
+  // align uiPhase with engine if snapshot is further along
+  if (engine.phase === 'battle') uiPhase = 'battle'
+  else if (engine.phase === 'game-over') uiPhase = 'game-over'
+  else if (engine.phase === 'placement') {
+    uiPhase =
+      s.uiPhase === 'waiting-opponent' ? 'waiting-opponent' : 'placement'
+  }
+  socket.setActiveRoom(code)
+  void socket.connect()
+  if (uiPhase === 'battle') socket.setFastPoll(true)
+  paint()
+  return true
+}
+
+async function openActiveGame(code: string) {
+  const key = code.toUpperCase().trim()
+  if (roomCode === key && uiPhase !== 'home') {
+    paint()
+    return
+  }
+  saveActiveSession()
+  if (resumeSession(key)) return
+  // No local snapshot — re-enter room membership and start from lobby/placement
+  try {
+    await socket.connect()
+    statusNote = t('connectingRoom', { code: key })
+    uiPhase = 'online-lobby'
+    paint()
+    socket.send({ type: 'join-room', code: key })
+  } catch (e) {
+    statusNote = mapRoomError((e as Error).message)
+    uiPhase = 'home'
+    paint()
+  }
+}
 
 function paint() {
   if (!rootEl) return
@@ -137,8 +264,17 @@ export async function mountApp(root: HTMLElement) {
 
   if (currentUser && pendingInviteCode) {
     await acceptPendingInvite()
+  } else if (currentUser) {
+    uiPhase = 'home'
+    try {
+      await socket.connect()
+      await refreshActiveGames()
+    } catch {
+      /* offline list empty */
+    }
+    paint()
   } else {
-    uiPhase = currentUser ? 'home' : 'auth'
+    uiPhase = 'auth'
     paint()
   }
 }
@@ -156,6 +292,7 @@ async function acceptPendingInvite(retries = 4) {
   const code = (pendingInviteCode || '').toUpperCase().trim()
   if (!code || !currentUser) return
   pendingInviteCode = code
+  saveActiveSession()
   statusNote = t('connectingRoom', { code })
   uiPhase = 'online-lobby'
   paint()
@@ -164,6 +301,7 @@ async function acceptPendingInvite(retries = 4) {
     engine.mode = 'online-join'
     myOnlineRole = 'p2'
     roomCode = code
+    socket.setActiveRoom(code)
     await joinRoomHttp(code)
     clearInviteFromUrl()
     pendingInviteCode = null
@@ -197,10 +335,9 @@ async function joinRoomHttp(code: string) {
   if (data.room) {
     roomInfo = data.room
     roomCode = data.room.code
+    socket.setActiveRoom(data.room.code)
     if (data.role) myOnlineRole = data.role
-    // drive UI the same way socket join would
     if (data.room.players.length >= 2) {
-      // both-joined path
       statusNote = t('friendJoined')
       engine.mode = myOnlineRole === 'p1' ? 'online-host' : 'online-join'
       const p1 = data.room.players.find((p) => p.role === 'p1')
@@ -213,6 +350,7 @@ async function joinRoomHttp(code: string) {
       statusNote = t('roomReadyInvite')
       uiPhase = 'online-lobby'
     }
+    saveActiveSession()
     paint()
   }
 }
@@ -243,6 +381,7 @@ function handleServer(msg: ServerMessage) {
     case 'room':
       roomInfo = msg.room
       roomCode = msg.room.code
+      socket.setActiveRoom(msg.room.code)
       if (msg.role) myOnlineRole = msg.role
       else if (currentUser) {
         const me = msg.room.players.find((p) => p.userId === currentUser!.id)
@@ -255,10 +394,13 @@ function handleServer(msg: ServerMessage) {
       if (msg.room.players.length < 2 && uiPhase !== 'placement' && uiPhase !== 'battle') {
         uiPhase = 'online-lobby'
       }
+      saveActiveSession()
       paint()
       break
     case 'both-joined':
       roomInfo = msg.room
+      roomCode = msg.room.code
+      socket.setActiveRoom(msg.room.code)
       statusNote = t('friendJoined')
       engine.mode = myOnlineRole === 'p1' ? 'online-host' : 'online-join'
       if (roomInfo) {
@@ -269,6 +411,7 @@ function handleServer(msg: ServerMessage) {
       }
       engine.beginOnlinePlacement()
       uiPhase = 'placement'
+      saveActiveSession()
       paint()
       break
     case 'ready':
@@ -649,7 +792,7 @@ function authScreen(): HTMLElement {
 
 function homeScreen(): HTMLElement {
   const u = currentUser!
-  return el('div', { className: 'screen', 'data-screen': 'home' }, [
+  const screen = el('div', { className: 'screen', 'data-screen': 'home' }, [
     el('h1', { className: 'logo', text: '✈ ' + t('appName') }),
     el('p', {
       className: 'tagline',
@@ -660,6 +803,68 @@ function homeScreen(): HTMLElement {
       statCard(String(u.losses), t('losses')),
       statCard(String(u.gamesPlayed), t('games')),
     ]),
+  ])
+
+  // Active games — pick by opponent name, multi-game
+  const gamesCard = el('div', { className: 'card active-games-card' }, [
+    el('h3', { className: 'active-games-title', text: t('activeGames') }),
+  ])
+  if (activeGames.length === 0 && sessions.size === 0) {
+    gamesCard.appendChild(el('p', { className: 'hint', text: t('activeGamesEmpty') }))
+  } else {
+    const list = el('div', { className: 'active-games-list', role: 'list' })
+    // Prefer server list; supplement with local-only sessions not yet on server list
+    const byCode = new Map<string, ActiveGame>()
+    for (const g of activeGames) byCode.set(g.code, g)
+    for (const [code, sess] of sessions) {
+      if (!byCode.has(code)) {
+        byCode.set(code, {
+          code,
+          role: sess.role,
+          opponentName: opponentLabel({
+            code,
+            role: sess.role,
+            opponentName: null,
+            opponentUserId: null,
+            playersCount: 1,
+            bothReady: false,
+            status: 'waiting',
+          }),
+          opponentUserId: null,
+          playersCount: sess.roomInfo?.players.length ?? 1,
+          bothReady: false,
+          status:
+            sess.uiPhase === 'battle' || sess.snapshot.phase === 'battle'
+              ? 'battle'
+              : sess.uiPhase === 'placement' || sess.uiPhase === 'waiting-opponent'
+                ? 'placing'
+                : 'waiting',
+        })
+      }
+    }
+    for (const g of byCode.values()) {
+      const name = opponentLabel(g)
+      const row = el('button', {
+        type: 'button',
+        className: 'active-game-row',
+        role: 'listitem',
+        'data-code': g.code,
+        onClick: () => void openActiveGame(g.code),
+      })
+      row.append(
+        el('div', { className: 'active-game-main' }, [
+          el('span', { className: 'active-game-vs', text: t('playVs', { name }) }),
+          el('span', { className: 'active-game-status', text: statusLabel(g) }),
+        ]),
+        el('span', { className: 'active-game-go', text: '›' }),
+      )
+      list.appendChild(row)
+    }
+    gamesCard.appendChild(list)
+  }
+  screen.appendChild(gamesCard)
+
+  screen.appendChild(
     el('div', { className: 'card grid-actions' }, [
       el('button', {
         className: 'btn btn-primary btn-block',
@@ -672,8 +877,11 @@ function homeScreen(): HTMLElement {
         'data-action': 'join-code',
         text: t('haveCode'),
         onClick: () => {
+          saveActiveSession()
           roomInfo = null
           roomCode = ''
+          myOnlineRole = null
+          socket.setActiveRoom(null)
           engine.mode = 'online-join'
           statusNote = t('pasteCodeHint')
           uiPhase = 'online-lobby'
@@ -690,7 +898,9 @@ function homeScreen(): HTMLElement {
         },
       }),
     ]),
-  ])
+  )
+
+  return screen
 }
 
 function statCard(n: string, l: string) {
@@ -701,16 +911,19 @@ function statCard(n: string, l: string) {
 }
 
 async function startOnlineHost() {
+  saveActiveSession()
   copyLinkNote = ''
   statusNote = t('preparingRoom')
+  roomInfo = null
+  roomCode = ''
+  myOnlineRole = 'p1'
+  engine.mode = 'online-host'
+  engine.phase = 'online-lobby'
   uiPhase = 'online-lobby'
   paint()
   try {
     await socket.connect()
     socket.send({ type: 'create-room' })
-    engine.mode = 'online-host'
-    engine.phase = 'online-lobby'
-    myOnlineRole = 'p1'
   } catch (e) {
     statusNote = (e as Error).message
     paint()
@@ -881,13 +1094,17 @@ function onlineLobbyScreen(): HTMLElement {
       style: 'margin-top:10px',
       text: t('cancelHome'),
       onClick: () => {
-        socket.send({ type: 'leave-room' })
-        socket.close()
-        roomInfo = null
-        roomCode = ''
-        copyLinkNote = ''
-        uiPhase = 'home'
-        paint()
+        void goHome({ leaveCurrent: true })
+      },
+    }),
+  )
+  card.appendChild(
+    el('button', {
+      className: 'btn btn-sky btn-block',
+      style: 'margin-top:8px',
+      text: t('keepAndHome'),
+      onClick: () => {
+        void goHome({ leaveCurrent: false })
       },
     }),
   )
@@ -1234,6 +1451,14 @@ function battleScreen(): HTMLElement {
           socket.send({ type: 'radar', player: me })
         },
       }),
+      el('button', {
+        className: 'btn btn-ghost',
+        'data-action': 'home-keep',
+        text: t('keepAndHome'),
+        onClick: () => {
+          void goHome({ leaveCurrent: false })
+        },
+      }),
     ]),
   ])
 }
@@ -1282,12 +1507,15 @@ function gameOverScreen(): HTMLElement {
           'data-action': 'menu',
           text: t('home'),
           onClick: () => {
-            socket.send({ type: 'leave-room' })
-            socket.close()
-            roomInfo = null
-            uiPhase = 'home'
-            engine.backToMenu()
-            paint()
+            void goHome({ leaveCurrent: true })
+          },
+        }),
+        el('button', {
+          className: 'btn btn-sky',
+          'data-action': 'home-keep',
+          text: t('keepAndHome'),
+          onClick: () => {
+            void goHome({ leaveCurrent: false })
           },
         }),
       ]),

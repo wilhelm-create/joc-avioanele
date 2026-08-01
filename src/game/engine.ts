@@ -591,7 +591,7 @@ export class GameEngine {
     }
   }
 
-  loadSnapshot(s: GameSnapshot) {
+  loadSnapshot(s: GameSnapshot, silent = false) {
     this.phase = s.phase
     this.mode = s.mode
     this.currentPlayer = s.currentPlayer
@@ -602,7 +602,7 @@ export class GameEngine {
     this.message = s.message
     this.p1 = deserializePlayer(s.p1)
     this.p2 = deserializePlayer(s.p2)
-    this.emit()
+    if (!silent) this.emit()
   }
 
   /** View helpers for UI */

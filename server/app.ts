@@ -17,6 +17,8 @@ import {
   joinRoom,
   getRoomByUser,
   leaveAll,
+  leaveRoom,
+  listActiveGames,
   markReady,
   pushEvent,
   pollEvents,
@@ -217,14 +219,17 @@ export function createApp() {
 
   app.post('/api/rooms/leave', requireAuth, async (req, res) => {
     const user = (req as express.Request & { user: PublicUser }).user
-    await leaveAll(user.id)
+    const code = String((req.body as { code?: string }).code || '').toUpperCase().trim()
+    if (code) await leaveRoom(user.id, code)
+    else await leaveAll(user.id)
     res.json({ ok: true })
   })
 
   app.get('/api/rooms/mine', requireAuth, async (req, res) => {
     const user = (req as express.Request & { user: PublicUser }).user
     await heartbeat(user.id)
-    const room = await getRoomByUser(user.id)
+    const preferred = String(req.query.code || '').toUpperCase().trim() || null
+    const room = await getRoomByUser(user.id, preferred)
     if (!room) {
       res.json({ room: null })
       return
@@ -233,11 +238,24 @@ export function createApp() {
     res.json({ room: roomPublic(room), role: me?.role ?? null })
   })
 
+  /** List all concurrent games for this user (Active Games section). */
+  app.get('/api/rooms/active', requireAuth, async (req, res) => {
+    try {
+      const user = (req as express.Request & { user: PublicUser }).user
+      await heartbeat(user.id)
+      const games = await listActiveGames(user.id)
+      res.json({ games })
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message })
+    }
+  })
+
   app.get('/api/rooms/poll', requireAuth, async (req, res) => {
     try {
       const user = (req as express.Request & { user: PublicUser }).user
       await heartbeat(user.id)
-      const room = await getRoomByUser(user.id)
+      const preferred = String(req.query.code || '').toUpperCase().trim() || null
+      const room = await getRoomByUser(user.id, preferred)
       if (!room) {
         res.json({ room: null, events: [], bothJoined: false, bothReady: false })
         return
@@ -263,17 +281,21 @@ export function createApp() {
   app.post('/api/rooms/event', requireAuth, async (req, res) => {
     try {
       const user = (req as express.Request & { user: PublicUser }).user
-      let room = await getRoomByUser(user.id)
+      const body = req.body as Record<string, unknown>
+      const preferred = String(body.code || body.roomCode || '').toUpperCase().trim() || null
+      let room = await getRoomByUser(user.id, preferred)
       if (!room) {
         res.status(400).json({ error: 'NOT_IN_ROOM' })
         return
       }
-      const body = req.body as Record<string, unknown>
       const type = String(body.type || '')
       if (!type) {
         res.status(400).json({ error: 'MISSING_TYPE' })
         return
       }
+
+      // strip routing fields from event payload stored in room
+      const { code: _c, roomCode: _r, ...eventBody } = body
 
       if (type === 'ready') {
         const both = await markReady(room.code, user.id)
@@ -288,7 +310,7 @@ export function createApp() {
         return
       }
 
-      room = (await pushEvent(room.code, user.id, user.username, body))!
+      room = (await pushEvent(room.code, user.id, user.username, eventBody))!
       res.json({ ok: true, room: roomPublic(room) })
     } catch (e) {
       res.status(400).json({ error: (e as Error).message })
