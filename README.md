@@ -1,76 +1,50 @@
-# ✈ Avioane — Joc cu Prieteni
+# ✈ Avioane — site multiplayer
 
-Jocul clasic românesc de **Avioane** pe grilă 10×10, optimizat pentru **mobil Android** (PWA instalabilă). Joacă pe același telefon (pass & play) sau **online** cu un prieten prin cod de cameră.
+Jocul clasic de **Avioane** pe grilă 10×10, ca **site web** (nu se instalează ca app).  
+Creezi **cont**, te autentifici și joci cu un prieten — pe **telefon, tabletă sau desktop**.
 
-> **Regulă de design:** culoarea **verde este interzisă** în tot proiectul.
+> Culoarea **verde este interzisă** în proiect.
 
-## Cum se joacă
+## Funcții
 
-1. Fiecare jucător plasează **3 avioane** (formă clasică, 10 celule, cabină roz ◆).
-2. Pe rând, ataci grila adversarului.
-3. **Lovit** = corp de avion · **Apă** = ratat · **Cabină** = avionul e **doborât** integral.
-4. Cine doboară toate cele 3 avioane adversarului câștigă.
+- **Conturi**: înregistrare + login (parolă hash-uită pe server)
+- **Pass & play** pe același device
+- **Camere online** cu cod (WebSocket pe server)
+- **Clasament** victorii / înfrângeri
+- **Cookies**: Radar, glitter burst, fanfară victorie
+- **Responsive** pe toate viewport-urile
 
-## Moduri multiplayer
-
-| Mod | Descriere |
-|-----|-----------|
-| **Același telefon** | Pass & play — ecran intermediar ca să nu vă uitați pe grila celuilalt |
-| **Cameră online** | Gazdă creează cod de 5 caractere; oaspetele intră cu codul (WebRTC via PeerJS) |
-
-## 🍪 3 cookies surpriză
-
-1. **📡 Radar** — o dată pe jucător / joc, dezvăluie până la 5 zone de apă pe grila inamică (nu consumă tura).
-2. **✨ Glitter burst** — particule tip spumă sclipitoare (violet / portocaliu / amber, fără verde) la lovituri și doborâri + vibrație pe Android.
-3. **🏆 Fanfară de victorie** — melodie Web Audio + confetti + ecran de trofeu cu statistici și revanșă.
-
-Bonus utilitar: butonul **Auto** plasează flota rămase aleator.
-
-## Rulează local
+## Pornire (dezvoltare)
 
 ```bash
 npm install
 npm run dev
 ```
 
-Deschide pe telefon (același Wi‑Fi): adresa afișată de Vite (`Network`).
+Deschide **http://localhost:5173**  
+API + WebSocket: **http://localhost:3000** (proxy din Vite: `/api`, `/ws`).
 
-### Instalare pe Android
+Copiază `.env.example` → `.env` și setează un `JWT_SECRET` propriu pentru producție.
 
-1. Deschide site-ul în **Chrome**.
-2. Meniu → **Instalează aplicația** / **Add to Home screen**.
-3. Pornește din iconița de pe ecranul principal (mod standalone, fără bară de browser).
-
-### Build producție
+## Producție
 
 ```bash
 npm run build
-npm run preview
+npm start
 ```
 
-Fișierele din `dist/` pot fi hostate pe orice static host (Netlify, Vercel, GitHub Pages, Firebase Hosting etc.).
+Serverul Express servește `dist/` + API pe `PORT` (default 3000).
 
 ## Teste
 
 ```bash
-npm test                 # motor + usability e2e
-npm run test:engine      # logică joc (fără browser)
-npm run test:usability   # Playwright pe viewport Pixel 7
+npm test
 ```
-
-Suite-ul de utilizare verifică: navigare, plasare, rotație, auto-place, bătălie, radar, victorie, touch targets ≥44px, **absența culorii verde**, flux online host.
 
 ## Structură
 
 ```
-src/
-  game/          # reguli, formă avion, motor
-  multiplayer/   # PeerJS online
-  cookies/       # efecte sonore, glitter, haptic
-  ui/            # ecrane mobile-first
-tests/           # Playwright usability
+server/     API auth, camere, WebSocket
+src/        UI + motor joc
+data/       users.json (generat local, în .gitignore)
 ```
-
-## Paletă (fără verde)
-
-Violet `#a78bfa` · Portocaliu `#fb923c` · Amber `#fbbf24` · Roz cabină `#f472b6` · Apă albastră `#3b82f6` · Fundal midnight `#0d0a1f`.

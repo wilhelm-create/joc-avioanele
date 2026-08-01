@@ -13,10 +13,18 @@ export default defineConfig({
     trace: 'on-first-retry',
     ...devices['Pixel 7'],
   },
-  webServer: {
-    command: 'npm run dev -- --host 127.0.0.1 --port 5173',
-    url: 'http://127.0.0.1:5173',
-    reuseExistingServer: true,
-    timeout: 120_000,
-  },
+  webServer: [
+    {
+      command: 'npx tsx server/index.ts',
+      url: 'http://127.0.0.1:3000/api/health',
+      reuseExistingServer: true,
+      timeout: 120_000,
+    },
+    {
+      command: 'npm run dev:client -- --host 127.0.0.1 --port 5173',
+      url: 'http://127.0.0.1:5173',
+      reuseExistingServer: true,
+      timeout: 120_000,
+    },
+  ],
 })

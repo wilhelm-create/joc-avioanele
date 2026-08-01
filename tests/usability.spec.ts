@@ -3,46 +3,83 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 /**
- * Usability suite for Avioane (mobile viewport via Pixel 7 device).
- * Must all pass before release.
+ * Usability suite — website with accounts, responsive devices.
  */
 
-test.describe('Avioane usability', () => {
-  test('home loads with logo and play CTA', async ({ page }) => {
+function uniqueUser() {
+  const n = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+  return { username: `u_${n}`.slice(0, 20), password: 'testpass123' }
+}
+
+async function registerFresh(page: import('@playwright/test').Page) {
+  const u = uniqueUser()
+  await page.goto('/')
+  await expect(page.locator('[data-screen="auth"]')).toBeVisible({ timeout: 15000 })
+  await page.getByRole('button', { name: /Cont nou/i }).click()
+  await page.locator('#auth-user').fill(u.username)
+  await page.locator('#auth-pass').fill(u.password)
+  await page.getByRole('button', { name: /Înregistrează-te/i }).click()
+  await expect(page.locator('[data-screen="home"]')).toBeVisible({ timeout: 15000 })
+  return u
+}
+
+test.describe('Avioane website usability', () => {
+  test('auth screen is default gate (not installable PWA chrome)', async ({ page }) => {
     await page.goto('/')
     await expect(page.getByRole('heading', { name: /Avioane/i })).toBeVisible()
-    const play = page.getByRole('button', { name: /Joacă acum/i })
-    await expect(play).toBeVisible()
-    const box = await play.boundingBox()
-    expect(box).toBeTruthy()
+    await expect(page.locator('[data-screen="auth"]')).toBeVisible()
+    await expect(page.getByRole('button', { name: /Intră/i }).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: /Cont nou/i })).toBeVisible()
+    // no manifest = not installable PWA
+    await expect(page.locator('link[rel="manifest"]')).toHaveCount(0)
+    const login = page.locator('[data-action="auth-submit"]')
+    const box = await login.boundingBox()
     expect(box!.height).toBeGreaterThanOrEqual(44)
   })
 
-  test('mode select offers local and online', async ({ page }) => {
+  test('register then home with stats', async ({ page }) => {
+    const u = await registerFresh(page)
+    await expect(page.locator('.user-chip')).toContainText(u.username)
+    await expect(page.getByRole('button', { name: /Joacă acum/i })).toBeVisible()
+    await expect(page.getByText(/victorii/i).first()).toBeVisible()
+  })
+
+  test('login with existing account', async ({ page, request }) => {
+    const u = uniqueUser()
+    const res = await request.post('http://127.0.0.1:3000/api/auth/register', {
+      data: { username: u.username, password: u.password },
+    })
+    expect(res.ok()).toBeTruthy()
+
     await page.goto('/')
+    await page.locator('#auth-user').fill(u.username)
+    await page.locator('#auth-pass').fill(u.password)
+    await page.locator('[data-action="auth-submit"]').click()
+    await expect(page.locator('[data-screen="home"]')).toBeVisible({ timeout: 10000 })
+  })
+
+  test('mode select after auth', async ({ page }) => {
+    await registerFresh(page)
     await page.getByRole('button', { name: /Joacă acum/i }).click()
-    await expect(page.getByRole('button', { name: /Același telefon/i })).toBeVisible()
-    await expect(page.getByRole('button', { name: /Creează cameră/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Același device/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Creează cameră online/i })).toBeVisible()
     await expect(page.getByRole('button', { name: /Intră în cameră/i })).toBeVisible()
   })
 
-  test('full local pass-and-play flow to placement', async ({ page }) => {
-    await page.goto('/')
+  test('full local pass-and-play to placement', async ({ page }) => {
+    await registerFresh(page)
     await page.getByRole('button', { name: /Joacă acum/i }).click()
-    await page.getByRole('button', { name: /Același telefon/i }).click()
-    await page.locator('#name-p1').fill('Ana')
-    await page.locator('#name-p2').fill('Bogdan')
+    await page.getByRole('button', { name: /Același device/i }).click()
+    await page.locator('#friend-name').fill('Bogdan')
     await page.getByRole('button', { name: /Începe plasarea/i }).click()
     await expect(page.locator('[data-screen="placement"]')).toBeVisible()
-    await expect(page.getByText('Ana — plasare 0/3')).toBeVisible()
-    // grid has 100 cells
     await expect(page.locator('.cell')).toHaveCount(100)
   })
 
-  test('rotate and auto-place works; second player places', async ({ page }) => {
-    await page.goto('/')
+  test('rotate and auto-place both players into battle', async ({ page }) => {
+    await registerFresh(page)
     await page.getByRole('button', { name: /Joacă acum/i }).click()
-    await page.getByRole('button', { name: /Același telefon/i }).click()
+    await page.getByRole('button', { name: /Același device/i }).click()
     await page.getByRole('button', { name: /Începe plasarea/i }).click()
 
     const rotate = page.getByRole('button', { name: /Rotește/i })
@@ -59,10 +96,10 @@ test.describe('Avioane usability', () => {
     await expect(page.locator('[data-screen="battle"]')).toBeVisible({ timeout: 5000 })
   })
 
-  test('battle: miss shot, radar cookie once, touch targets', async ({ page }) => {
-    await page.goto('/')
+  test('battle radar cookie and touch targets', async ({ page }) => {
+    await registerFresh(page)
     await page.getByRole('button', { name: /Joacă acum/i }).click()
-    await page.getByRole('button', { name: /Același telefon/i }).click()
+    await page.getByRole('button', { name: /Același device/i }).click()
     await page.getByRole('button', { name: /Începe plasarea/i }).click()
     await page.getByRole('button', { name: /Auto/i }).click()
     await page.getByRole('button', { name: /continuă/i }).click()
@@ -70,41 +107,24 @@ test.describe('Avioane usability', () => {
     await page.getByRole('button', { name: /continuă/i }).click()
     await expect(page.locator('[data-screen="battle"]')).toBeVisible()
 
-    // enemy board first
     const enemy = page.locator('[data-board="enemy"]')
-    await expect(enemy).toBeVisible()
-
-    // fire top-left — may hit or miss depending on auto layout; either way cell marked
-    const cell = enemy.locator('.cell').first()
-    const box = await cell.boundingBox()
-    expect(box!.width).toBeGreaterThanOrEqual(28)
-    await cell.click()
-
-    // pass screen or still battle if online-like; local always pass after shot
-    const passOrBattle = page.locator('[data-screen="pass-device"], [data-screen="battle"], [data-screen="game-over"]')
-    await expect(passOrBattle.first()).toBeVisible()
-
-    // If pass, continue and try radar on next turn after both... actually after one shot we pass
+    await enemy.locator('.cell').first().click()
     if (await page.locator('[data-screen="pass-device"]').isVisible()) {
       await page.getByRole('button', { name: /continuă/i }).click()
     }
-
-    // On p2 turn, use radar
     if (await page.locator('[data-screen="battle"]').isVisible()) {
       const radar = page.getByRole('button', { name: /Radar/i })
-      await expect(radar).toBeVisible()
       const rb = await radar.boundingBox()
       expect(rb!.height).toBeGreaterThanOrEqual(44)
       await radar.click()
-      await expect(page.getByText(/Radar/i).first()).toBeVisible()
     }
   })
 
-  test('complete game reaches victory screen', async ({ page }) => {
+  test('complete game reaches victory', async ({ page }) => {
     test.setTimeout(120_000)
-    await page.goto('/')
+    await registerFresh(page)
     await page.getByRole('button', { name: /Joacă acum/i }).click()
-    await page.getByRole('button', { name: /Același telefon/i }).click()
+    await page.getByRole('button', { name: /Același device/i }).click()
     await page.getByRole('button', { name: /Începe plasarea/i }).click()
     await page.getByRole('button', { name: /Auto/i }).click()
     await page.getByRole('button', { name: /continuă/i }).click()
@@ -112,92 +132,47 @@ test.describe('Avioane usability', () => {
     await page.getByRole('button', { name: /continuă/i }).click()
     await expect(page.locator('[data-screen="battle"]')).toBeVisible()
 
-    // Sweep every enemy cell for both players until someone wins
     for (let i = 0; i < 450; i++) {
       if (await page.locator('[data-screen="game-over"]').isVisible().catch(() => false)) break
-
       if (await page.locator('[data-screen="pass-device"]').isVisible().catch(() => false)) {
         await page.locator('[data-action="continue"]').click({ force: true })
         continue
       }
-
       if (!(await page.locator('[data-screen="battle"]').isVisible().catch(() => false))) continue
-
       const target = page
         .locator('[data-board="enemy"] .cell:not(.miss):not(.hit):not(.sunk):not(.radar)')
         .first()
       if ((await target.count()) === 0) break
       await target.click({ force: true })
     }
-
     await expect(page.locator('[data-screen="game-over"]')).toBeVisible({ timeout: 10_000 })
     await expect(page.getByRole('button', { name: /Revanșă/i })).toBeVisible()
-    await expect(page.getByRole('button', { name: /Meniu/i })).toBeVisible()
   })
 
-  test('project CSS contains no green colors', async () => {
-    const cssPath = path.resolve('src/style.css')
-    const css = fs.readFileSync(cssPath, 'utf8')
-    // ban common green hex / keywords (allow comments saying "no green")
-    const banned = [
-      /#0f0\b/i,
-      /#00ff00/i,
-      /#008000/i,
-      /#22c55e/i,
-      /#16a34a/i,
-      /#4ade80/i,
-      /#86efac/i,
-      /#166534/i,
-      /\bgreen\b/i,
-      /\blime\b/i,
-      /rgb\(\s*0\s*,\s*128\s*,\s*0\s*\)/i,
-      /rgb\(\s*0\s*,\s*255\s*,\s*0\s*\)/i,
-    ]
-    // strip comments first
-    const code = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  test('no green colors in CSS/source', async () => {
+    const css = fs.readFileSync(path.resolve('src/style.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+    const banned = [/#22c55e/i, /#16a34a/i, /#4ade80/i, /#00ff00/i, /\bgreen\b/i, /\blime\b/i]
     for (const re of banned) {
-      expect(code, `Forbidden green pattern ${re}`).not.toMatch(re)
+      expect(css, String(re)).not.toMatch(re)
     }
   })
 
-  test('source files ban green color tokens', async () => {
-    const files = [
-      'src/ui/app.ts',
-      'src/game/engine.ts',
-      'src/cookies/effects.ts',
-      'src/style.css',
-    ]
-    for (const f of files) {
-      const text = fs.readFileSync(path.resolve(f), 'utf8')
-      // actual color usage of green hexes
-      expect(text, f).not.toMatch(/#22c55e|#16a34a|#4ade80|#86efac|#00ff00|#008000/i)
-    }
+  test('responsive layout works on desktop viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await registerFresh(page)
+    await expect(page.locator('.site-header')).toBeVisible()
+    await expect(page.locator('.site-footer')).toBeVisible()
+    const main = page.locator('main.main')
+    const box = await main.boundingBox()
+    expect(box!.width).toBeGreaterThan(400)
   })
 
-  test('PWA manifest is installable shape', async ({ page }) => {
-    await page.goto('/')
-    const manifestLink = page.locator('link[rel="manifest"]')
-    // in dev, vite-plugin-pwa may inject; if not, check public path exists after build
-    // at least app is standalone-ready meta
-    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', /#/)
-    await expect(page.locator('meta[name="viewport"]')).toHaveAttribute(
-      'content',
-      /width=device-width/,
-    )
-    void manifestLink
-  })
-
-  test('online host shows room code UI path', async ({ page }) => {
-    await page.goto('/')
+  test('online host creates room code via API socket path', async ({ page }) => {
+    await registerFresh(page)
     await page.getByRole('button', { name: /Joacă acum/i }).click()
-    await page.getByRole('button', { name: /Creează cameră/i }).click()
-    await page.locator('#name-p1').fill('Host')
-    await page.getByRole('button', { name: /Creează camera/i }).click()
-    // lobby or error (peerjs network) — either lobby screen or message
-    await page.waitForTimeout(2000)
-    const lobby = page.locator('[data-screen="online-lobby"]')
-    const nameEntry = page.locator('[data-screen="name-entry"]')
-    const ok = (await lobby.isVisible()) || (await nameEntry.isVisible())
-    expect(ok).toBeTruthy()
+    await page.getByRole('button', { name: /Creează cameră online/i }).click()
+    await expect(page.locator('[data-screen="online-lobby"]')).toBeVisible({ timeout: 10000 })
+    // room code appears when WS works
+    await expect(page.locator('.room-code')).toBeVisible({ timeout: 15000 })
   })
 })

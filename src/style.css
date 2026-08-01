@@ -58,12 +58,171 @@ body {
 
 #app {
   min-height: 100dvh;
+  width: 100%;
+}
+
+.skip-link {
+  position: absolute;
+  left: -999px;
+  top: 0;
+  background: var(--violet);
+  color: #fff;
+  padding: 8px 12px;
+  z-index: 10000;
+  border-radius: 0 0 8px 0;
+}
+.skip-link:focus {
+  left: 0;
+}
+
+.page {
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
-  padding: calc(12px + var(--safe-top)) 14px calc(16px + var(--safe-bottom));
-  max-width: 480px;
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 14px calc(16px + var(--safe-bottom));
+}
+
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: calc(10px + var(--safe-top)) 0 12px;
+  border-bottom: 1px solid rgba(61, 52, 112, 0.5);
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.brand {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.15rem;
+  font-weight: 800;
+  cursor: pointer;
+  font-family: inherit;
+  min-height: 44px;
+  padding: 4px 0;
+}
+
+.brand-mark {
+  font-size: 1.35rem;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.user-chip {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--amber);
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 999px;
+  padding: 6px 12px;
+}
+
+.btn-sm {
+  min-height: 40px;
+  padding: 8px 12px;
+  font-size: 0.9rem;
+}
+
+.main {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.site-footer {
+  margin-top: 20px;
+  padding: 14px 0;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  border-top: 1px solid rgba(61, 52, 112, 0.4);
+}
+
+.auth-screen .auth-card {
+  max-width: 420px;
   margin: 0 auto;
   width: 100%;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+
+.tab {
+  flex: 1;
+  min-height: 44px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: rgba(167, 139, 250, 0.2);
+  color: var(--text);
+  border-color: var(--violet);
+}
+
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.grid-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.battle-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.player-list,
+.leader-list {
+  margin: 12px 0;
+  padding-left: 1.2rem;
+  color: var(--text);
+  line-height: 1.7;
+}
+
+.leader-list .me {
+  color: var(--amber);
+  font-weight: 700;
+}
+
+.center {
+  align-items: center;
+  justify-content: center;
+  flex: 1;
 }
 
 #fx-layer {
@@ -744,9 +903,75 @@ input[type='text']:focus {
   }
 }
 
-/* landscape tablets — keep portrait feel */
+/* phones large */
 @media (min-width: 480px) {
   :root {
     --cell: 38px;
+  }
+}
+
+/* tablets */
+@media (min-width: 768px) {
+  :root {
+    --cell: 42px;
+  }
+
+  .page {
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+
+  .boards-stack {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 24px;
+  }
+
+  .card {
+    padding: 20px;
+  }
+
+  .logo {
+    font-size: 2.6rem;
+  }
+}
+
+/* desktop */
+@media (min-width: 1024px) {
+  :root {
+    --cell: 44px;
+  }
+
+  .page {
+    max-width: 1100px;
+  }
+
+  .auth-card,
+  .screen > .card {
+    max-width: 480px;
+  }
+
+  .screen[data-screen='home'] > .card,
+  .screen[data-screen='mode-select'] > .card {
+    max-width: 520px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .screen[data-screen='battle'] .boards-stack {
+    gap: 40px;
+  }
+}
+
+/* very small phones */
+@media (max-width: 360px) {
+  :root {
+    --cell: min(7.6vw, 30px);
+  }
+
+  .btn {
+    font-size: 0.95rem;
   }
 }
