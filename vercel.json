@@ -4,7 +4,10 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api" }
+    { "source": "/api/(.*)", "destination": "/api" },
+    { "source": "/joc/(.*)", "destination": "/index.html" },
+    { "source": "/join/(.*)", "destination": "/index.html" },
+    { "source": "/camera/(.*)", "destination": "/index.html" }
   ],
   "functions": {
     "api/index.ts": {

@@ -225,6 +225,23 @@ body {
   flex: 1;
 }
 
+.soft-hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
+
+.subhead {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+input[readonly] {
+  opacity: 0.95;
+  cursor: text;
+}
+
 #fx-layer {
   pointer-events: none;
   position: fixed;

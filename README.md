@@ -7,12 +7,11 @@ Creezi **cont**, te autentifici și joci cu un prieten — pe **telefon, tablet�
 
 ## Funcții
 
-- **Conturi**: înregistrare + login (parolă hash-uită pe server)
-- **Pass & play** pe același device
-- **Camere online** cu cod (WebSocket pe server)
-- **Clasament** victorii / înfrângeri
-- **Cookies**: Radar, glitter burst, fanfară victorie
-- **Responsive** pe toate viewport-urile
+- **Conturi**: înregistrare + login
+- **Multiplayer remote**: fiecare pe device-ul lui (telefon / tabletă / PC), de acasă sau de oriunde
+- **Invitație prin link + SMS** (chiar dacă prietenul nu e online acum)
+- **Deep link** `https://…/?room=COD` → intră direct în cameră după login
+- **Clasament**, cookies (radar, glitter, fanfară), fără culoare verde
 
 ## Pornire (dezvoltare)
 

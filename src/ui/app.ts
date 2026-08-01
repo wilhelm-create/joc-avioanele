@@ -20,19 +20,25 @@ import {
   login,
   register,
   reportMatch,
+  sendInviteSms,
 } from '../api/client'
 import { clearSession, getStoredUser, getToken } from '../auth/session'
 import type { PublicUser } from '../auth/types'
+import {
+  buildInviteSmsBody,
+  buildInviteUrl,
+  clearInviteFromUrl,
+  getInviteCodeFromLocation,
+  openNativeSms,
+} from '../invite/url'
 
 type UiPhase =
   | 'boot'
   | 'auth'
   | 'home'
-  | 'mode-select'
-  | 'local-names'
   | 'online-lobby'
   | 'placement'
-  | 'pass-device'
+  | 'waiting-opponent'
   | 'battle'
   | 'game-over'
   | 'leaderboard'
@@ -50,11 +56,15 @@ let authPassDraft = ''
 let roomCode = ''
 let roomInfo: RoomInfo | null = null
 let myOnlineRole: PlayerId | null = null
-let friendNameDraft = 'Prietenul'
 let statusNote = ''
 let leaders: PublicUser[] = []
 let matchReported = false
 let rootEl: HTMLElement | null = null
+/** Pending invite from deep link — join after login */
+let pendingInviteCode: string | null = null
+let invitePhoneDraft = ''
+let inviteSmsNote = ''
+let copyLinkNote = ''
 
 function paint() {
   if (!rootEl) return
@@ -76,16 +86,14 @@ export async function mountApp(root: HTMLElement) {
   document.body.appendChild(fx)
 
   engine.onChange(() => {
-    // map engine phases into ui when in-game
     if (
       uiPhase === 'placement' ||
-      uiPhase === 'pass-device' ||
+      uiPhase === 'waiting-opponent' ||
       uiPhase === 'battle' ||
       uiPhase === 'game-over' ||
       uiPhase === 'online-lobby'
     ) {
       if (engine.phase === 'placement') uiPhase = 'placement'
-      else if (engine.phase === 'pass-device') uiPhase = 'pass-device'
       else if (engine.phase === 'battle') uiPhase = 'battle'
       else if (engine.phase === 'game-over') {
         uiPhase = 'game-over'
@@ -103,6 +111,8 @@ export async function mountApp(root: HTMLElement) {
   }
   window.addEventListener('pointerdown', unlock)
 
+  pendingInviteCode = getInviteCodeFromLocation()
+
   uiPhase = 'boot'
   paint()
 
@@ -111,13 +121,39 @@ export async function mountApp(root: HTMLElement) {
   } else {
     currentUser = null
   }
-  uiPhase = currentUser ? 'home' : 'auth'
+
+  if (currentUser && pendingInviteCode) {
+    await acceptPendingInvite()
+  } else {
+    uiPhase = currentUser ? 'home' : 'auth'
+    paint()
+  }
+}
+
+async function acceptPendingInvite() {
+  const code = pendingInviteCode
+  if (!code || !currentUser) return
+  statusNote = `Te conectezi la camera ${code}…`
+  uiPhase = 'online-lobby'
   paint()
+  try {
+    await socket.connect()
+    engine.mode = 'online-join'
+    myOnlineRole = 'p2'
+    roomCode = code
+    socket.send({ type: 'join-room', code })
+    clearInviteFromUrl()
+    pendingInviteCode = null
+  } catch (e) {
+    statusNote = (e as Error).message
+    pendingInviteCode = null
+    paint()
+  }
 }
 
 async function maybeReportMatch() {
   if (matchReported || !engine.winner || !currentUser) return
-  if (engine.mode === 'local') return
+  if (engine.mode === 'local') return // local mode kept only for offline tests
   const winnerId =
     engine.winner === 'p1'
       ? roomInfo?.players.find((p) => p.role === 'p1')?.userId
@@ -146,13 +182,18 @@ function handleServer(msg: ServerMessage) {
         const me = msg.room.players.find((p) => p.userId === currentUser!.id)
         if (me) myOnlineRole = me.role
       }
-      statusNote = `Cameră ${roomCode} · ${msg.room.players.length}/2 jucători`
-      if (msg.room.players.length < 2) uiPhase = 'online-lobby'
+      statusNote =
+        msg.room.players.length < 2
+          ? 'Camera e gata. Invită prietenul — el joacă de pe device-ul lui.'
+          : `Cameră ${roomCode} · amândoi sunteți conectați`
+      if (msg.room.players.length < 2 && uiPhase !== 'placement' && uiPhase !== 'battle') {
+        uiPhase = 'online-lobby'
+      }
       paint()
       break
     case 'both-joined':
       roomInfo = msg.room
-      statusNote = 'Amândoi sunteți în cameră — plasați avioanele!'
+      statusNote = 'Prietenul s-a conectat! Fiecare plasează avioanele pe device-ul lui.'
       engine.mode = myOnlineRole === 'p1' ? 'online-host' : 'online-join'
       if (roomInfo) {
         const p1 = roomInfo.players.find((p) => p.role === 'p1')
@@ -166,26 +207,39 @@ function handleServer(msg: ServerMessage) {
       break
     case 'ready':
       roomInfo = msg.room
-      statusNote = 'Un jucător e gata…'
+      statusNote = 'Adversarul și-a plasat flota. Așteaptă…'
+      if (engine.phase === 'placement') {
+        // stay on placement or waiting
+        const me = myOnlineRole ?? 'p1'
+        if (engine.player(me).planes.length >= PLANES_PER_PLAYER) {
+          uiPhase = 'waiting-opponent'
+        }
+      }
       paint()
       break
     case 'start-battle':
       engine.phase = 'battle'
       engine.currentPlayer = 'p1'
       engine.turn = 1
-      engine.message = `Bătălia începe! Atacă ${engine.p1.name}`
+      engine.message =
+        myOnlineRole === 'p1'
+          ? 'Bătălia începe — e tura ta!'
+          : `Bătălia începe — așteaptă ca ${engine.p1.name} să tragă`
       uiPhase = 'battle'
       engine.notify()
       break
     case 'placement':
       if (msg.player !== myOnlineRole) {
         engine.applyRemotePlacement(msg.player, msg.data)
+        // if we already placed, try start
+        if (myOnlineRole) engine.markOnlineReady(myOnlineRole)
       }
       break
     case 'shot':
       if (msg.player !== myOnlineRole) {
         const result = engine.fire(msg.coord, msg.player)
         playShotFx(result)
+        uiPhase = 'battle'
       }
       break
     case 'radar':
@@ -201,7 +255,10 @@ function handleServer(msg: ServerMessage) {
       paint()
       break
     case 'peer-left':
-      statusNote = 'Adversarul a părăsit camera'
+      statusNote = 'Adversarul s-a deconectat. Poți invita din nou din lobby.'
+      if (uiPhase === 'battle' || uiPhase === 'placement') {
+        /* keep state visible */
+      }
       paint()
       break
     case 'error':
@@ -222,16 +279,12 @@ function view(): HTMLElement {
       return shell(authScreen())
     case 'home':
       return shell(homeScreen())
-    case 'mode-select':
-      return shell(modeSelectScreen())
-    case 'local-names':
-      return shell(localNamesScreen())
     case 'online-lobby':
       return shell(onlineLobbyScreen())
     case 'placement':
       return shell(placementScreen())
-    case 'pass-device':
-      return shell(passScreen())
+    case 'waiting-opponent':
+      return shell(waitingOpponentScreen())
     case 'battle':
       return shell(battleScreen())
     case 'game-over':
@@ -402,8 +455,12 @@ function authScreen(): HTMLElement {
           currentUser = res.user
           authBusy = false
           authPassDraft = ''
-          uiPhase = 'home'
-          paint()
+          if (pendingInviteCode) {
+            await acceptPendingInvite()
+          } else {
+            uiPhase = 'home'
+            paint()
+          }
         } catch (e) {
           authBusy = false
           authError = (e as Error).message
@@ -413,10 +470,19 @@ function authScreen(): HTMLElement {
     }),
   )
 
+  if (pendingInviteCode) {
+    card.appendChild(
+      el('div', {
+        className: 'banner',
+        text: `Ai fost invitat în camera ${pendingInviteCode}. Autentifică-te ca să intri.`,
+      }),
+    )
+  }
+
   card.appendChild(
     el('p', {
       className: 'hint',
-      text: 'Compatibil cu telefon, tabletă și desktop. Nu e nevoie de instalare.',
+      text: 'Fiecare joacă de pe telefonul / tableta / calculatorul lui — de oriunde. Nu se dă telefonul din mână.',
     }),
   )
 
@@ -427,23 +493,35 @@ function homeScreen(): HTMLElement {
   const u = currentUser!
   return el('div', { className: 'screen', 'data-screen': 'home' }, [
     el('h1', { className: 'logo', text: '✈ Avioane' }),
-    el('p', { className: 'tagline', text: `Salut, ${u.username}! Alege cum vrei să joci.` }),
+    el('p', {
+      className: 'tagline',
+      text: `Salut, ${u.username}! Invită un prieten — el joacă de pe device-ul lui, de acasă sau de oriunde.`,
+    }),
     el('div', { className: 'stats-row' }, [
       statCard(String(u.wins), 'victorii'),
       statCard(String(u.losses), 'înfrângeri'),
       statCard(String(u.gamesPlayed), 'meciuri'),
     ]),
-    el('div', { className: 'card' }, [
+    el('div', { className: 'card grid-actions' }, [
       el('button', {
         className: 'btn btn-primary btn-block',
-        'data-action': 'play',
-        text: 'Joacă acum',
+        'data-action': 'invite',
+        text: '📨 Invită un prieten (SMS / link)',
+        onClick: () => void startOnlineHost(),
+      }),
+      el('button', {
+        className: 'btn btn-sky btn-block',
+        'data-action': 'join-code',
+        text: '🔗 Am un cod / link de invitație',
         onClick: () => {
-          uiPhase = 'mode-select'
+          roomInfo = null
+          roomCode = ''
+          engine.mode = 'online-join'
+          statusNote = 'Lipește codul camerei din SMS sau link'
+          uiPhase = 'online-lobby'
           paint()
         },
       }),
-      el('div', { style: 'height:10px' }),
       el('button', {
         className: 'btn btn-ghost btn-block',
         text: 'Clasament',
@@ -459,13 +537,6 @@ function homeScreen(): HTMLElement {
       el('span', { className: 'cookie-chip', text: '🍪 Glitter burst' }),
       el('span', { className: 'cookie-chip', text: '🍪 Fanfară victorie' }),
     ]),
-    el('div', { className: 'legend' }, [
-      legendItem('#a78bfa', 'avion'),
-      legendItem('#f472b6', 'cabină'),
-      legendItem('#f43f5e', 'lovit'),
-      legendItem('#fbbf24', 'doborât'),
-      legendItem('#3b82f6', 'apă'),
-    ]),
   ])
 }
 
@@ -476,100 +547,10 @@ function statCard(n: string, l: string) {
   ])
 }
 
-function legendItem(color: string, label: string) {
-  return el('span', {}, [el('i', { className: 'swatch', style: `background:${color}` }), label])
-}
-
-function modeSelectScreen(): HTMLElement {
-  return el('div', { className: 'screen', 'data-screen': 'mode-select' }, [
-    el('h2', { text: 'Mod de joc' }),
-    el('div', { className: 'card grid-actions' }, [
-      el('button', {
-        className: 'btn btn-primary btn-block',
-        'data-action': 'local',
-        text: '📱 Același device (pass & play)',
-        onClick: () => {
-          uiPhase = 'local-names'
-          paint()
-        },
-      }),
-      el('button', {
-        className: 'btn btn-accent btn-block',
-        'data-action': 'online-host',
-        text: '🌐 Creează cameră online',
-        onClick: () => void startOnlineHost(),
-      }),
-      el('button', {
-        className: 'btn btn-sky btn-block',
-        'data-action': 'online-join',
-        text: '🔗 Intră în cameră (cod)',
-        onClick: () => {
-          uiPhase = 'online-lobby'
-          roomCode = ''
-          statusNote = 'Introdu codul camerei prietenului'
-          paint()
-        },
-      }),
-      el('button', {
-        className: 'btn btn-ghost btn-block',
-        text: '← Înapoi',
-        onClick: () => {
-          uiPhase = 'home'
-          paint()
-        },
-      }),
-    ]),
-  ])
-}
-
-function localNamesScreen(): HTMLElement {
-  const friend = el('input', {
-    type: 'text',
-    id: 'friend-name',
-    maxlength: '16',
-    value: friendNameDraft,
-    'aria-label': 'Numele prietenului',
-  }) as HTMLInputElement
-  friend.value = friendNameDraft
-
-  return el('div', { className: 'screen', 'data-screen': 'local-names' }, [
-    el('h2', { text: 'Pass & play' }),
-    el('div', { className: 'card' }, [
-      el('p', {
-        className: 'hint',
-        text: `Tu ești ${currentUser!.username}. Cum îl cheamă pe prietenul de lângă tine?`,
-      }),
-      el('div', { className: 'field' }, [
-        el('label', { for: 'friend-name', text: 'Nume prieten' }),
-        friend,
-      ]),
-      el('button', {
-        className: 'btn btn-primary btn-block',
-        'data-action': 'start-local',
-        text: 'Începe plasarea',
-        onClick: () => {
-          friendNameDraft = friend.value.trim() || 'Prietenul'
-          engine.setNames(currentUser!.username, friendNameDraft)
-          engine.startLocal()
-          uiPhase = 'placement'
-          paint()
-        },
-      }),
-      el('div', { style: 'height:8px' }),
-      el('button', {
-        className: 'btn btn-ghost btn-block',
-        text: '← Înapoi',
-        onClick: () => {
-          uiPhase = 'mode-select'
-          paint()
-        },
-      }),
-    ]),
-  ])
-}
-
 async function startOnlineHost() {
-  statusNote = 'Se creează camera…'
+  inviteSmsNote = ''
+  copyLinkNote = ''
+  statusNote = 'Se pregătește camera de joc…'
   uiPhase = 'online-lobby'
   paint()
   try {
@@ -585,23 +566,155 @@ async function startOnlineHost() {
 }
 
 function onlineLobbyScreen(): HTMLElement {
-  const isJoinForm = !roomInfo && engine.mode !== 'online-host'
+  const isHostLobby = Boolean(roomInfo && roomCode && myOnlineRole === 'p1')
+  const isGuestWaiting = Boolean(roomInfo && roomCode && myOnlineRole === 'p2')
+  const needJoinForm = !roomInfo && engine.mode === 'online-join'
 
   const card = el('div', { className: 'card' })
 
-  if (roomInfo && roomCode) {
+  if (isHostLobby || isGuestWaiting) {
+    const link = buildInviteUrl(roomCode)
     card.append(
-      el('p', { className: 'hint', text: 'Trimite codul prietenului (are nevoie de cont pe site):' }),
+      el('p', {
+        className: 'hint',
+        text: isHostLobby
+          ? 'Camera e gata. Prietenul joacă de pe telefonul/tableta/PC-ul lui — nu îi dai device-ul tău.'
+          : 'Ești în cameră. Așteaptă gazda și pregătirea partidei…',
+      }),
       el('div', { className: 'room-code', 'data-room': roomCode, text: roomCode }),
+    )
+
+    if (isHostLobby) {
+      const linkInput = el('input', {
+        type: 'text',
+        id: 'invite-link',
+        readonly: 'true',
+        value: link,
+        'aria-label': 'Link invitație',
+      }) as HTMLInputElement
+      linkInput.value = link
+      linkInput.readOnly = true
+
+      const phoneInput = el('input', {
+        type: 'tel',
+        id: 'invite-phone',
+        inputmode: 'tel',
+        placeholder: 'ex: +40722123456',
+        'aria-label': 'Număr telefon prieten',
+        autocomplete: 'tel',
+      }) as HTMLInputElement
+      phoneInput.value = invitePhoneDraft
+      phoneInput.addEventListener('input', () => {
+        invitePhoneDraft = phoneInput.value
+      })
+
+      card.append(
+        el('div', { className: 'field' }, [
+          el('label', { for: 'invite-link', text: 'Link cameră (trimite-l oricui)' }),
+          linkInput,
+        ]),
+        el('div', { className: 'btn-row' }, [
+          el('button', {
+            className: 'btn btn-accent',
+            type: 'button',
+            'data-action': 'copy-link',
+            text: '📋 Copiază link',
+            onClick: async () => {
+              try {
+                await navigator.clipboard.writeText(link)
+                copyLinkNote = 'Link copiat!'
+              } catch {
+                linkInput.select()
+                copyLinkNote = 'Selectează și copiază manual'
+              }
+              paint()
+            },
+          }),
+          el('button', {
+            className: 'btn btn-sky',
+            type: 'button',
+            'data-action': 'share-link',
+            text: '↗ Share',
+            onClick: async () => {
+              const text = buildInviteSmsBody(roomCode, currentUser!.username)
+              if (navigator.share) {
+                try {
+                  await navigator.share({ title: 'Avioane — invitație', text, url: link })
+                } catch {
+                  /* cancelled */
+                }
+              } else {
+                try {
+                  await navigator.clipboard.writeText(text)
+                  copyLinkNote = 'Text invitație copiat'
+                  paint()
+                } catch {
+                  /* ignore */
+                }
+              }
+            },
+          }),
+        ]),
+        el('hr', { className: 'soft-hr' }),
+        el('h3', { className: 'subhead', text: 'Invită prin SMS' }),
+        el('p', {
+          className: 'hint',
+          text: 'Chiar dacă prietenul nu e online acum: îi trimiți SMS cu linkul. Când deschide linkul pe device-ul lui, intră direct în cameră.',
+        }),
+        el('div', { className: 'field' }, [
+          el('label', { for: 'invite-phone', text: 'Număr de telefon' }),
+          phoneInput,
+        ]),
+        el('button', {
+          className: 'btn btn-primary btn-block',
+          type: 'button',
+          'data-action': 'send-sms',
+          text: '💬 Trimite SMS cu linkul camerei',
+          onClick: async () => {
+            invitePhoneDraft = phoneInput.value
+            inviteSmsNote = ''
+            const body = buildInviteSmsBody(roomCode, currentUser!.username)
+            try {
+              const res = await sendInviteSms(invitePhoneDraft, roomCode, link)
+              if (res.mode === 'twilio') {
+                inviteSmsNote = 'SMS trimis pe server (Twilio).'
+              } else {
+                openNativeSms(res.phone || invitePhoneDraft, res.body || body)
+                inviteSmsNote = 'S-a deschis aplicația de mesaje — apasă Trimite.'
+              }
+            } catch {
+              try {
+                openNativeSms(invitePhoneDraft, body)
+                inviteSmsNote = 'S-a deschis aplicația de mesaje — apasă Trimite.'
+              } catch (e2) {
+                inviteSmsNote = (e2 as Error).message
+              }
+            }
+            paint()
+          },
+        }),
+      )
+      if (copyLinkNote) card.appendChild(el('div', { className: 'banner', text: copyLinkNote }))
+      if (inviteSmsNote) card.appendChild(el('div', { className: 'banner radar', text: inviteSmsNote }))
+    }
+
+    card.append(
       el('ul', { className: 'player-list' }, [
-        ...roomInfo.players.map((p) =>
+        ...roomInfo!.players.map((p) =>
           el('li', {
-            text: `${p.role === 'p1' ? '①' : '②'} ${p.username}${p.ready ? ' ✓' : ''}`,
+            text: `${p.role === 'p1' ? '① Gazdă' : '② Oaspete'}: ${p.username}${p.ready ? ' ✓ flota gata' : ' …'}`,
           }),
         ),
       ]),
+      el('div', {
+        className: 'banner',
+        text:
+          roomInfo!.players.length < 2
+            ? '⏳ Așteaptă ca prietenul să deschidă linkul pe device-ul lui…'
+            : '✅ Amândoi sunteți online — începe plasarea!',
+      }),
     )
-  } else if (isJoinForm || (!roomCode && statusNote.includes('cod'))) {
+  } else if (needJoinForm) {
     const codeInput = el('input', {
       type: 'text',
       id: 'join-code',
@@ -611,11 +724,15 @@ function onlineLobbyScreen(): HTMLElement {
       style: 'text-transform:uppercase;letter-spacing:0.15em;font-weight:700',
     }) as HTMLInputElement
     card.append(
+      el('p', {
+        className: 'hint',
+        text: 'Din SMS sau mesaj: deschide linkul, sau introdu codul camerei aici. Joci de pe device-ul tău.',
+      }),
       el('div', { className: 'field' }, [el('label', { for: 'join-code', text: 'Cod cameră' }), codeInput]),
       el('button', {
         className: 'btn btn-sky btn-block',
         'data-action': 'join-room',
-        text: 'Conectează-te',
+        text: 'Intră în cameră',
         onClick: async () => {
           const code = codeInput.value.trim().toUpperCase()
           if (code.length < 4) {
@@ -623,20 +740,13 @@ function onlineLobbyScreen(): HTMLElement {
             paint()
             return
           }
-          statusNote = 'Conectare…'
-          paint()
-          try {
-            await socket.connect()
-            engine.mode = 'online-join'
-            myOnlineRole = 'p2'
-            socket.send({ type: 'join-room', code })
-          } catch (e) {
-            statusNote = (e as Error).message
-            paint()
-          }
+          pendingInviteCode = code
+          await acceptPendingInvite()
         },
       }),
     )
+  } else {
+    card.appendChild(el('p', { className: 'hint', text: statusNote || 'Se încarcă lobby-ul…' }))
   }
 
   if (statusNote) card.appendChild(el('div', { className: 'banner', text: statusNote }))
@@ -645,56 +755,81 @@ function onlineLobbyScreen(): HTMLElement {
     el('button', {
       className: 'btn btn-ghost btn-block',
       style: 'margin-top:10px',
-      text: 'Anulează',
+      text: 'Anulează / Acasă',
       onClick: () => {
         socket.send({ type: 'leave-room' })
         socket.close()
         roomInfo = null
         roomCode = ''
-        uiPhase = 'mode-select'
+        inviteSmsNote = ''
+        copyLinkNote = ''
+        uiPhase = 'home'
         paint()
       },
     }),
   )
 
   return el('div', { className: 'screen', 'data-screen': 'online-lobby' }, [
-    el('h2', { text: roomInfo ? 'Lobby cameră' : 'Intră în cameră' }),
+    el('h2', { text: isHostLobby ? 'Invită & așteaptă' : 'Intră în cameră' }),
     card,
   ])
 }
 
+function waitingOpponentScreen(): HTMLElement {
+  return el('div', { className: 'screen pass-screen', 'data-screen': 'waiting-opponent' }, [
+    el('div', { className: 'pass-icon', text: '⏳' }),
+    el('h2', { text: 'Flota ta e gata' }),
+    el('p', {
+      className: 'hint',
+      text: engine.message || 'Așteaptă ca prietenul să termine plasarea pe device-ul lui…',
+    }),
+    el('div', { className: 'banner', text: statusNote || 'Nu trebuie să predai telefonul — aștepți online.' }),
+  ])
+}
+
+function finishPlacementAndNotify(placeFor: PlayerId) {
+  socket.send({
+    type: 'placement',
+    player: placeFor,
+    data: engine.snapshot()[placeFor],
+  })
+  socket.send({ type: 'ready' })
+  const started = engine.markOnlineReady(placeFor)
+  if (!started) {
+    uiPhase = 'waiting-opponent'
+    statusNote = 'Așteaptă ca prietenul să plaseze flota pe device-ul lui…'
+    paint()
+  }
+}
+
 function placementScreen(): HTMLElement {
-  const placeFor =
-    engine.mode === 'local' ? engine.placingPlayer : (myOnlineRole ?? engine.placingPlayer)
+  const placeFor = myOnlineRole ?? engine.placingPlayer
   const p = engine.player(placeFor)
-  const isMyTurnToPlace = engine.mode === 'local' || myOnlineRole === placeFor
+  const canPlace = p.planes.length < PLANES_PER_PLAYER
 
   return el('div', { className: 'screen', 'data-screen': 'placement' }, [
     el('div', { className: 'player-pill' }, [
       el('span', { className: 'dot', style: `background:${p.color}` }),
-      el('span', { text: `${p.name} — plasare ${p.planes.length}/${PLANES_PER_PLAYER}` }),
+      el('span', { text: `${p.name} — flota ta ${p.planes.length}/${PLANES_PER_PLAYER}` }),
     ]),
-    el('div', { className: 'banner', text: engine.message || statusNote }),
+    el('div', {
+      className: 'banner',
+      text: engine.message || 'Plasează cele 3 avioane pe grila TA. Prietenul face la fel pe device-ul lui.',
+    }),
     boardElement({
       mode: 'own',
       playerId: placeFor,
-      interactive: isMyTurnToPlace && p.planes.length < PLANES_PER_PLAYER,
+      interactive: canPlace,
       showFleet: true,
       ghost: true,
       onCell: (coord) => {
-        if (!isMyTurnToPlace) return
+        if (!canPlace) return
         engine.placingPlayer = placeFor
         engine.setGhost(coord)
         if (engine.placePlane(coord)) {
           sfxPlace()
-          if (engine.mode !== 'local' && engine.player(placeFor).planes.length >= PLANES_PER_PLAYER) {
-            socket.send({
-              type: 'placement',
-              player: placeFor,
-              data: engine.snapshot()[placeFor],
-            })
-            socket.send({ type: 'ready' })
-            engine.markOnlineReady(placeFor)
+          if (engine.player(placeFor).planes.length >= PLANES_PER_PLAYER) {
+            finishPlacementAndNotify(placeFor)
           }
         } else {
           buzz(30)
@@ -720,15 +855,7 @@ function placementScreen(): HTMLElement {
           engine.placingPlayer = placeFor
           if (engine.autoPlaceRemaining()) {
             sfxPlace()
-            if (engine.mode !== 'local' && engine.player(placeFor).planes.length >= PLANES_PER_PLAYER) {
-              socket.send({
-                type: 'placement',
-                player: placeFor,
-                data: engine.snapshot()[placeFor],
-              })
-              socket.send({ type: 'ready' })
-              engine.markOnlineReady(placeFor)
-            }
+            finishPlacementAndNotify(placeFor)
           }
         },
       }),
@@ -744,46 +871,15 @@ function placementScreen(): HTMLElement {
     ]),
     el('p', {
       className: 'hint',
-      text: 'Atinge grila ca să plasezi. Cabina (◆) e punctul vulnerabil.',
-    }),
-  ])
-}
-
-function passScreen(): HTMLElement {
-  const next = engine.player(engine.currentPlayer)
-  const stillPlacing =
-    engine.p1.planes.length < PLANES_PER_PLAYER || engine.p2.planes.length < PLANES_PER_PLAYER
-
-  return el('div', { className: 'screen pass-screen', 'data-screen': 'pass-device' }, [
-    el('div', { className: 'pass-icon', text: '🙈' }),
-    el('h2', { text: stillPlacing ? 'Schimbați device-ul' : 'Tura următoare' }),
-    el('p', { className: 'hint', text: engine.message }),
-    el('div', { className: 'player-pill' }, [
-      el('span', { className: 'dot', style: `background:${next.color}` }),
-      el('span', {
-        text: stillPlacing
-          ? engine.player(engine.placingPlayer === 'p1' ? 'p2' : 'p1').name
-          : next.name,
-      }),
-    ]),
-    el('button', {
-      className: 'btn btn-primary btn-block',
-      'data-action': 'continue',
-      style: 'max-width:320px',
-      text: 'Sunt eu — continuă',
-      onClick: () => {
-        if (stillPlacing) engine.continueAfterPass()
-        else engine.resumeBattleFromPass()
-      },
+      text: 'Cabina (◆) e punctul vulnerabil. Nu predai telefonul — fiecare pe device-ul lui.',
     }),
   ])
 }
 
 function battleScreen(): HTMLElement {
-  const me =
-    engine.mode === 'local' ? engine.currentPlayer : (myOnlineRole ?? engine.currentPlayer)
+  const me = myOnlineRole ?? engine.currentPlayer
   const myPlayer = engine.player(me)
-  const isMyTurn = engine.mode === 'local' || engine.currentPlayer === myOnlineRole
+  const isMyTurn = engine.currentPlayer === myOnlineRole
 
   const bannerClass =
     engine.lastShot?.kind === 'hit'
@@ -794,7 +890,13 @@ function battleScreen(): HTMLElement {
           ? 'banner miss'
           : engine.message.includes('Radar')
             ? 'banner radar'
-            : 'banner'
+            : isMyTurn
+              ? 'banner'
+              : 'banner radar'
+
+  const turnMsg = isMyTurn
+    ? engine.message || 'E tura ta — atacă grila adversarului!'
+    : `Așteaptă — joacă ${engine.player(engine.currentPlayer).name} de pe device-ul lui…`
 
   return el('div', { className: 'screen', 'data-screen': 'battle' }, [
     el('div', { className: 'battle-top' }, [
@@ -803,14 +905,16 @@ function battleScreen(): HTMLElement {
           className: 'dot',
           style: `background:${engine.player(engine.currentPlayer).color}`,
         }),
-        el('span', { text: `Tura: ${engine.player(engine.currentPlayer).name}` }),
+        el('span', {
+          text: isMyTurn ? 'Tura ta' : `Tura: ${engine.player(engine.currentPlayer).name}`,
+        }),
       ]),
       el('span', {
         className: 'hint',
-        text: `Tur ${engine.turn} · Doborâte: ${engine.opponent(me).planesSunk}/3`,
+        text: `Tur ${engine.turn} · Doborâte de tine: ${engine.opponent(me).planesSunk}/3`,
       }),
     ]),
-    el('div', { className: bannerClass, text: engine.message }),
+    el('div', { className: bannerClass, text: turnMsg }),
     el('div', { className: 'boards-stack' }, [
       boardElement({
         mode: 'enemy',
@@ -818,12 +922,12 @@ function battleScreen(): HTMLElement {
         interactive: isMyTurn,
         showFleet: false,
         ghost: false,
-        title: 'Țintă — grila adversarului',
+        title: isMyTurn ? 'Țintă — atacă aici' : 'Țintă (așteaptă tura ta)',
         onCell: (coord, cellEl) => {
           if (!isMyTurn) return
           const result = engine.fire(coord, me)
           playShotFx(result, cellEl)
-          if (engine.mode !== 'local' && result.kind !== 'already') {
+          if (result.kind !== 'already') {
             socket.send({ type: 'shot', player: me, coord })
           }
         },
@@ -854,7 +958,7 @@ function battleScreen(): HTMLElement {
               glitterBurst(rect.width / 2, rect.height * 0.35, 20)
             }
           }
-          if (engine.mode !== 'local') socket.send({ type: 'radar', player: me })
+          socket.send({ type: 'radar', player: me })
         },
       }),
     ]),

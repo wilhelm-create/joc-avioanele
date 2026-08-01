@@ -61,6 +61,17 @@ export async function reportMatch(winnerId: string, loserId: string): Promise<vo
 export function wsUrl(): string {
   const token = getToken()
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  // In dev, Vite proxies /ws → backend
   return `${proto}//${location.host}/ws?token=${encodeURIComponent(token || '')}`
+}
+
+/** Optional server-sent SMS (Twilio). Falls back to client-side sms: if not configured. */
+export async function sendInviteSms(
+  phone: string,
+  roomCode: string,
+  inviteUrl?: string,
+): Promise<{ mode: 'twilio' | 'client'; body?: string; phone?: string }> {
+  return request<{ mode: 'twilio' | 'client'; body?: string; phone?: string }>('/api/invite/sms', {
+    method: 'POST',
+    body: JSON.stringify({ phone, roomCode, inviteUrl }),
+  })
 }

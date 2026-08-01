@@ -117,6 +117,68 @@ export function createApp() {
     res.json({ ok: true })
   })
 
+  /**
+   * SMS invite — if Twilio env vars are set, send server-side SMS.
+   * Otherwise return { mode: 'client' } so the browser opens the native SMS app.
+   */
+  app.post('/api/invite/sms', requireAuth, async (req, res) => {
+    const user = (req as express.Request & { user: PublicUser }).user
+    const { phone, roomCode, inviteUrl } = req.body as {
+      phone?: string
+      roomCode?: string
+      inviteUrl?: string
+    }
+    if (!phone || !roomCode) {
+      res.status(400).json({ error: 'phone și roomCode obligatorii' })
+      return
+    }
+    const digits = String(phone).replace(/[^\d+]/g, '')
+    if (digits.length < 8) {
+      res.status(400).json({ error: 'Număr de telefon invalid' })
+      return
+    }
+    const code = String(roomCode).toUpperCase()
+    const link =
+      inviteUrl ||
+      `${process.env.PUBLIC_APP_URL || 'https://joc-avioanele.vercel.app'}/?room=${encodeURIComponent(code)}`
+    const body = `✈ Avioane: ${user.username} te invită! Deschide linkul și joacă de pe telefonul tău: ${link}`
+
+    const sid = process.env.TWILIO_ACCOUNT_SID
+    const token = process.env.TWILIO_AUTH_TOKEN
+    const from = process.env.TWILIO_FROM
+
+    if (sid && token && from) {
+      try {
+        const auth = Buffer.from(`${sid}:${token}`).toString('base64')
+        const params = new URLSearchParams({ To: digits, From: from, Body: body })
+        const tw = await fetch(
+          `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Basic ${auth}`,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: params.toString(),
+          },
+        )
+        if (!tw.ok) {
+          const errText = await tw.text()
+          res.status(502).json({ error: 'Twilio a eșuat', detail: errText.slice(0, 200) })
+          return
+        }
+        res.json({ mode: 'twilio', ok: true })
+        return
+      } catch (e) {
+        res.status(502).json({ error: (e as Error).message })
+        return
+      }
+    }
+
+    // No Twilio — client should open native SMS composer
+    res.json({ mode: 'client', body, phone: digits })
+  })
+
   /* ——— HTTP multiplayer (Vercel-safe) ——— */
 
   app.post('/api/rooms/create', requireAuth, (req, res) => {
