@@ -45,7 +45,8 @@ html[data-theme='light'] {
   --header-bg: color-mix(in oklch, white 48%, transparent);
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
-  --cell: min(8.2vw, 36px);
+  /* Cell size respects both width and short phone heights so boards fit */
+  --cell: min(8.2vw, 36px, 6.2dvh);
   --radius: 20px;
   --font: 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
   color-scheme: light;
@@ -108,6 +109,7 @@ body {
   font-family: var(--font);
   background: var(--bg-deep);
   color: var(--text);
+  /* Document itself does not scroll; #main is the scroll container */
   overflow: hidden;
   touch-action: manipulation;
   -webkit-text-size-adjust: 100%;
@@ -120,8 +122,12 @@ body.app-shell {
   position: fixed;
   inset: 0;
   width: 100%;
+  height: 100%;
+  height: 100dvh;
   background: var(--bg-deep);
   overflow: hidden;
+  /* Allow vertical pan on the shell so nested scroll areas receive gestures */
+  touch-action: pan-y manipulation;
 }
 
 body.app-shell::before,
@@ -250,11 +256,14 @@ body.app-shell::after {
   z-index: 1;
   height: 100%;
   height: 100dvh;
+  max-height: 100dvh;
   width: 100%;
   max-width: 480px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   background: color-mix(in oklch, var(--bg) 40%, transparent);
   backdrop-filter: blur(8px) saturate(140%);
   -webkit-backdrop-filter: blur(8px) saturate(140%);
@@ -308,9 +317,10 @@ body.app-shell::after {
 }
 
 .page {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   height: 100%;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -478,16 +488,16 @@ body.app-shell::after {
 }
 
 .main {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   width: 100%;
-  display: flex;
-  flex-direction: column;
+  display: block; /* block so children height is content-driven (scroll works) */
   overflow-y: auto;
   overflow-x: hidden;
-  overscroll-behavior: contain;
+  overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
-  padding-bottom: calc(14px + var(--safe-bottom));
+  touch-action: pan-y manipulation;
+  padding-bottom: calc(28px + var(--safe-bottom));
 }
 
 .site-footer {
@@ -499,9 +509,12 @@ body.app-shell::after {
   flex-direction: column;
   gap: 14px;
   padding-top: 12px;
-  padding-bottom: 8px;
+  padding-bottom: calc(24px + var(--safe-bottom));
   animation: fadeIn 0.28s ease-out;
-  flex: 1;
+  /* Content height drives scroll — do NOT flex-fill (that blocked overflow scroll) */
+  flex: 0 0 auto;
+  width: 100%;
+  min-height: min-content;
 }
 
 @keyframes fadeIn {
@@ -941,13 +954,15 @@ html[data-theme='dark'] .room-code {
   grid-template-rows: 22px repeat(10, var(--cell));
   gap: 2px;
   user-select: none;
-  touch-action: none;
-  padding: 8px;
+  /* pan-y: allow vertical page scroll when finger starts on the board (critical on mobile) */
+  touch-action: pan-y manipulation;
+  padding: 6px;
   border-radius: 16px;
   background: var(--glass-bg);
   border: 1px solid var(--border);
   backdrop-filter: blur(16px);
   box-shadow: 0 1px 0 var(--glass-inset) inset;
+  max-width: 100%;
 }
 
 .board .col-label,
@@ -968,6 +983,8 @@ html[data-theme='dark'] .room-code {
   border: 1px solid color-mix(in oklch, var(--sky) 25%, transparent);
   position: relative;
   cursor: pointer;
+  /* Keep taps snappy but allow vertical scroll if gesture is a pan */
+  touch-action: manipulation;
   transition:
     background 0.12s ease,
     transform 0.1s ease;
@@ -1120,7 +1137,8 @@ html[data-theme='dark'] .room-code {
 
 /* ——— Pass / wait / victory ——— */
 .pass-screen {
-  flex: 1;
+  flex: 0 0 auto;
+  min-height: min(60dvh, 420px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1338,15 +1356,64 @@ html[data-theme='dark'] .room-code {
   }
 }
 
+/* Compact phones / short viewports: fit board + controls without cutting off */
 @media (max-width: 360px) {
   :root {
-    --cell: min(7.6vw, 30px);
+    --cell: min(7.4vw, 28px, 5.6dvh);
+  }
+  .screen {
+    gap: 10px;
+  }
+  .orient-pad {
+    max-width: 100%;
+    gap: 8px;
+    padding: 8px;
+  }
+  .orient-btn {
+    min-height: 48px;
+    min-width: 0;
+    font-size: 1.25rem;
   }
 }
 
-@media (min-width: 480px) {
+@media (max-height: 720px) {
   :root {
-    --cell: 36px;
+    --cell: min(7.6vw, 32px, 5.4dvh);
+  }
+  .screen {
+    gap: 10px;
+    padding-top: 8px;
+  }
+  .orient-pad {
+    margin-bottom: 6px;
+    padding: 8px;
+  }
+  .orient-btn {
+    min-height: 48px;
+  }
+  .banner {
+    padding: 10px 12px;
+    font-size: 0.9rem;
+  }
+  .boards-stack {
+    gap: 12px;
+  }
+}
+
+@media (max-height: 600px) {
+  :root {
+    --cell: min(7vw, 28px, 4.8dvh);
+  }
+  .site-header {
+    padding-top: calc(4px + var(--safe-top));
+    padding-bottom: 6px;
+    gap: 4px;
+  }
+}
+
+@media (min-width: 480px) and (min-height: 700px) {
+  :root {
+    --cell: min(36px, 5.5dvh);
   }
 }
 
