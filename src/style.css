@@ -1140,23 +1140,26 @@ html[data-theme='dark'] .room-code {
 }
 
 .cell.plane {
-  background: linear-gradient(
+  /* solid + gradient so fleet is always visible in light/dark */
+  background: var(--fleet-color, var(--brand)) !important;
+  background-image: linear-gradient(
     145deg,
-    var(--fleet-color, var(--brand)),
-    color-mix(in oklch, var(--fleet-color, var(--brand)) 70%, black)
-  );
-  border-color: color-mix(in oklch, white 30%, transparent);
-  box-shadow: inset 0 0 8px color-mix(in oklch, white 25%, transparent);
+    color-mix(in srgb, var(--fleet-color, #e8956a) 100%, white 12%),
+    color-mix(in srgb, var(--fleet-color, #e8956a) 75%, black 25%)
+  ) !important;
+  border-color: color-mix(in srgb, black 25%, var(--fleet-color, #e8956a)) !important;
+  box-shadow: inset 0 0 8px rgb(255 255 255 / 0.25);
 }
 
 .cell.head {
-  background: linear-gradient(
+  background: var(--fleet-color, var(--orange)) !important;
+  background-image: linear-gradient(
     145deg,
-    color-mix(in oklch, var(--fleet-color, var(--orange)) 85%, white),
-    var(--fleet-color, var(--orange))
-  );
-  border-color: color-mix(in oklch, white 40%, transparent);
-  box-shadow: 0 0 10px color-mix(in oklch, var(--fleet-color, var(--orange)) 45%, transparent);
+    color-mix(in srgb, var(--fleet-color, #e8956a) 70%, white 30%),
+    color-mix(in srgb, var(--fleet-color, #e8956a) 90%, black 10%)
+  ) !important;
+  border-color: color-mix(in srgb, black 20%, var(--fleet-color, #e8956a)) !important;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--fleet-color, #e8956a) 50%, transparent);
 }
 
 .cell.head::after {
@@ -1168,6 +1171,8 @@ html[data-theme='dark'] .room-code {
   justify-content: center;
   font-size: 0.55rem;
   color: #fff;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.45);
+  z-index: 1;
 }
 
 .cell.miss {

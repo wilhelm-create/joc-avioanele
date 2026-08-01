@@ -401,9 +401,16 @@ async function joinRoomHttp(code: string) {
       const p2 = data.room.players.find((p) => p.role === 'p2')
       if (p1) engine.p1.name = p1.username
       if (p2) engine.p2.name = p2.username
-      if (data.room.settings) engine.applySettings(data.room.settings, true)
-      engine.beginOnlinePlacement()
-      uiPhase = 'placement'
+      const alreadyPlaying =
+        engine.phase === 'placement' ||
+        engine.phase === 'battle' ||
+        engine.p1.planes.length > 0 ||
+        engine.p2.planes.length > 0
+      if (!alreadyPlaying) {
+        if (data.room.settings) engine.applySettings(data.room.settings, true)
+        engine.beginOnlinePlacement()
+        uiPhase = 'placement'
+      }
     } else {
       if (data.room.settings) engine.applySettings(data.room.settings, true)
       statusNote = t('roomReadyInvite')
@@ -446,12 +453,26 @@ function handleServer(msg: ServerMessage) {
         const me = msg.room.players.find((p) => p.userId === currentUser!.id)
         if (me) myOnlineRole = me.role
       }
-      if (msg.room.settings) engine.applySettings(msg.room.settings, true)
+      // Never re-apply settings in a way that wipes fleets mid-match
+      if (
+        msg.room.settings &&
+        engine.phase !== 'battle' &&
+        engine.phase !== 'game-over' &&
+        uiPhase !== 'battle' &&
+        uiPhase !== 'game-over' &&
+        uiPhase !== 'waiting-opponent'
+      ) {
+        // During placement only apply if no fleet yet (avoid wipe from geometry noise)
+        const hasFleet =
+          engine.p1.planes.length > 0 || engine.p2.planes.length > 0
+        if (!hasFleet) engine.applySettings(msg.room.settings, true)
+        else engine.applySettings({ ...msg.room.settings, gridSize: engine.gridSize, planesPerPlayer: engine.planesPerPlayer, longWings: engine.longWings }, true)
+      }
       statusNote =
         msg.room.players.length < 2
           ? t('roomReadyInvite')
           : t('roomBothConnected', { code: roomCode })
-      if (msg.room.players.length < 2 && uiPhase !== 'placement' && uiPhase !== 'battle') {
+      if (msg.room.players.length < 2 && uiPhase !== 'placement' && uiPhase !== 'battle' && uiPhase !== 'waiting-opponent') {
         uiPhase = 'online-lobby'
       }
       saveActiveSession()
@@ -468,21 +489,50 @@ function handleServer(msg: ServerMessage) {
         const p2 = roomInfo.players.find((p) => p.role === 'p2')
         if (p1) engine.p1.name = p1.username
         if (p2) engine.p2.name = p2.username
-        if (roomInfo.settings) engine.applySettings(roomInfo.settings, true)
       }
-      engine.beginOnlinePlacement()
-      uiPhase = 'placement'
+      // CRITICAL: do not call beginOnlinePlacement again after fleets are placed
+      // (poll can re-emit both-joined when rejoining / multi-game focus)
+      {
+        const alreadyPlaying =
+          engine.phase === 'placement' ||
+          engine.phase === 'battle' ||
+          engine.phase === 'game-over' ||
+          uiPhase === 'placement' ||
+          uiPhase === 'waiting-opponent' ||
+          uiPhase === 'battle' ||
+          uiPhase === 'game-over' ||
+          engine.p1.planes.length > 0 ||
+          engine.p2.planes.length > 0
+        if (!alreadyPlaying) {
+          if (roomInfo?.settings) engine.applySettings(roomInfo.settings, true)
+          engine.beginOnlinePlacement()
+          uiPhase = 'placement'
+        }
+      }
       saveActiveSession()
       paint()
       break
     case 'settings':
       if (msg.settings) {
-        engine.applySettings(msg.settings, true)
-        if (roomInfo) roomInfo = { ...roomInfo, settings: msg.settings }
-        if (msg.geometryChanged && (uiPhase === 'placement' || uiPhase === 'waiting-opponent')) {
-          // fleets cleared in engine.applySettings
-          uiPhase = 'placement'
-          statusNote = t('settingsChangedReset')
+        // Never wipe fleets once battle started
+        if (engine.phase === 'battle' || engine.phase === 'game-over' || uiPhase === 'battle') {
+          // only cosmetic color if needed
+          engine.applySettings(
+            {
+              ...msg.settings,
+              gridSize: engine.gridSize,
+              planesPerPlayer: engine.planesPerPlayer,
+              longWings: engine.longWings,
+            },
+            true,
+          )
+        } else {
+          engine.applySettings(msg.settings, true)
+          if (roomInfo) roomInfo = { ...roomInfo, settings: msg.settings }
+          if (msg.geometryChanged && (uiPhase === 'placement' || uiPhase === 'waiting-opponent')) {
+            uiPhase = 'placement'
+            statusNote = t('settingsChangedReset')
+          }
         }
         paint()
       }
@@ -502,15 +552,21 @@ function handleServer(msg: ServerMessage) {
       // Idempotent: bothReady poll + own ready response may fire twice
       if (uiPhase === 'battle' && engine.phase === 'battle') break
       engine.phase = 'battle'
-      engine.currentPlayer = 'p1'
-      engine.turn = 1
+      // Don't reset turn/currentPlayer if already progressed mid-battle (reconnect)
+      if (engine.turn < 1) {
+        engine.currentPlayer = 'p1'
+        engine.turn = 1
+      }
       engine.message =
-        myOnlineRole === 'p1'
-          ? t('battleStartYou')
+        myOnlineRole === 'p1' || engine.currentPlayer === myOnlineRole
+          ? engine.currentPlayer === myOnlineRole
+            ? t('battleStartYou')
+            : t('waitPlayer', { name: engine.player(engine.currentPlayer).name })
           : t('battleStartWait', { name: engine.p1.name })
       uiPhase = 'battle'
       statusNote = ''
       socket.setFastPoll(true)
+      saveActiveSession()
       paint()
       break
     case 'placement':
@@ -1977,9 +2033,10 @@ function placementScreen(): HTMLElement {
 }
 
 function battleScreen(): HTMLElement {
-  const me = myOnlineRole ?? engine.currentPlayer
+  // Always prefer online role so "own fleet" never flips to the opponent's board
+  const me = myOnlineRole ?? (engine.mode === 'online-join' ? 'p2' : 'p1')
   const myPlayer = engine.player(me)
-  const isMyTurn = engine.currentPlayer === myOnlineRole
+  const isMyTurn = engine.currentPlayer === me
 
   const bannerClass =
     engine.lastShot?.kind === 'hit'
@@ -2466,7 +2523,7 @@ function softRefreshBattle(flashCoord?: Coord) {
     return
   }
 
-  const me = myOnlineRole ?? engine.currentPlayer
+  const me = myOnlineRole ?? (engine.mode === 'online-join' ? 'p2' : 'p1')
   const isMyTurn = engine.currentPlayer === me
 
   const turnMsg = isMyTurn

@@ -114,7 +114,7 @@ export class GameEngine {
     return this.settings.longWings
   }
 
-  /** Apply settings; clears fleets if geometry changed. */
+  /** Apply settings; clears fleets if geometry changed (only before battle). */
   applySettings(raw: Partial<GameSettings>, silent = false) {
     const next = clampSettings(raw)
     const geometryChanged =
@@ -123,17 +123,25 @@ export class GameEngine {
       next.longWings !== this.settings.longWings
     this.settings = next
     this.p1.color = next.planeColor
-    if (geometryChanged && this.phase === 'placement') {
+    // Never wipe fleets once shots are flying
+    const canResetFleets =
+      this.phase === 'placement' ||
+      this.phase === 'online-lobby' ||
+      this.phase === 'menu'
+    if (geometryChanged && canResetFleets) {
       this.p1.planes = []
       this.p1.fleet.clear()
       this.p2.planes = []
       this.p2.fleet.clear()
       this.ghostHead = null
       this.message = t('engineSettingsUpdated')
-    } else {
-      this.p1.color = next.planeColor
     }
     if (!silent) this.emit()
+  }
+
+  /** True if this player has a placed fleet */
+  hasFleet(id: PlayerId): boolean {
+    return this.player(id).planes.length > 0
   }
 
   onChange(fn: () => void): () => void {
