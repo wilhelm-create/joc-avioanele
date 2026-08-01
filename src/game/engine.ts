@@ -193,7 +193,11 @@ export class GameEngine {
   placePlane(head: Coord, silent = false): boolean {
     if (this.phase !== 'placement') return false
     const p = this.player(this.placingPlayer)
-    if (p.planes.length >= PLANES_PER_PLAYER) return false
+    // Hard cap — never a 4th plane
+    if (p.planes.length >= PLANES_PER_PLAYER) {
+      this.ghostHead = null
+      return false
+    }
     if (!isValidPlacement(head, this.placeOrientation, this.occupiedSet(p))) return false
 
     const cells = planeCells(head, this.placeOrientation)
@@ -213,6 +217,7 @@ export class GameEngine {
     }
 
     // Never auto-advance — player may still rearrange; UI "Done" confirms
+    this.ghostHead = null
     if (p.planes.length >= PLANES_PER_PLAYER) {
       this.message = t('engineAllPlaced')
     } else {
@@ -222,7 +227,6 @@ export class GameEngine {
         left: PLANES_PER_PLAYER - p.planes.length,
       })
     }
-    this.ghostHead = null
     if (!silent) this.emit()
     return true
   }

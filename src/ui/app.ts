@@ -1153,12 +1153,19 @@ function placementScreen(): HTMLElement {
   const p = engine.player(placeFor)
   const fleetFull = p.planes.length >= PLANES_PER_PLAYER
   const canPlaceMore = p.planes.length < PLANES_PER_PLAYER
-  // Default ghost on grid center so rotation is always visible (mobile + desktop)
+  // Ghost only while a free slot remains (never a “4th plane” preview)
   const defaultGhost: Coord = { r: Math.floor(GRID / 2), c: Math.floor(GRID / 2) }
-  let stickyGhost: Coord | null =
-    engine.ghostHead ?? (canPlaceMore || engine.ghostHead ? engine.ghostHead ?? defaultGhost : defaultGhost)
-  if (!stickyGhost) stickyGhost = defaultGhost
+  let stickyGhost: Coord | null = canPlaceMore ? (engine.ghostHead ?? defaultGhost) : null
   let boardApi: BoardApi | null = null
+
+  const freeSlots = () =>
+    PLANES_PER_PLAYER - engine.player(placeFor).planes.length
+
+  const clearGhostVisual = () => {
+    stickyGhost = null
+    engine.setGhost(null)
+    boardApi?.paintGhost(null)
+  }
 
   const bannerText = fleetFull
     ? engine.message || t('placeReadyBanner')
@@ -1180,10 +1187,15 @@ function placementScreen(): HTMLElement {
     playerId: placeFor,
     interactive: true, // place, tap-to-pick, or drag-and-drop
     showFleet: true,
+    // Ghost always enabled for drag/rotate; paintGhost itself refuses a 4th plane
     ghost: true,
     stickyGhost: true,
     dragPlanes: true,
     onGhost: (c) => {
+      if (freeSlots() <= 0) {
+        stickyGhost = null
+        return
+      }
       if (c) stickyGhost = c
     },
     onDragPlane: (phase, coord, meta) => {
@@ -1221,14 +1233,21 @@ function placementScreen(): HTMLElement {
         stickyGhost = head
         if (engine.placePlane(head, true)) {
           sfxPlace()
-          stickyGhost = defaultGhost
+          // After place: only keep ghost if a free slot remains
+          if (freeSlots() <= 0) {
+            stickyGhost = null
+            engine.setGhost(null)
+          } else {
+            stickyGhost = defaultGhost
+          }
           paint()
           return true
         }
         // invalid drop → restore original if we have it
         if (meta?.origin) {
           engine.restorePlane(meta.origin.head, meta.origin.orientation, true)
-          stickyGhost = defaultGhost
+          stickyGhost = null
+          engine.setGhost(null)
           paint()
           buzz(30)
           return false
@@ -1239,7 +1258,8 @@ function placementScreen(): HTMLElement {
       }
       if (phase === 'cancel' && meta?.origin) {
         engine.restorePlane(meta.origin.head, meta.origin.orientation, true)
-        stickyGhost = defaultGhost
+        stickyGhost = null
+        engine.setGhost(null)
         paint()
         return false
       }
@@ -1257,8 +1277,9 @@ function placementScreen(): HTMLElement {
         }
         return
       }
-      // Place if we still have free slots
+      // Place if we still have free slots — never a 4th plane
       if (engine.player(placeFor).planes.length >= PLANES_PER_PLAYER) {
+        clearGhostVisual()
         buzz(20)
         return
       }
@@ -1266,7 +1287,12 @@ function placementScreen(): HTMLElement {
       stickyGhost = coord
       if (engine.placePlane(coord)) {
         sfxPlace()
-        stickyGhost = defaultGhost
+        if (freeSlots() <= 0) {
+          stickyGhost = null
+          engine.setGhost(null)
+        } else {
+          stickyGhost = defaultGhost
+        }
         paint()
       } else {
         buzz(30)
@@ -1286,6 +1312,12 @@ function placementScreen(): HTMLElement {
     onClick: (e: Event) => {
       e.preventDefault()
       e.stopPropagation()
+      // Rotate only useful while placing / after pick-up (free slot)
+      if (freeSlots() <= 0) {
+        clearGhostVisual()
+        buzz(12)
+        return
+      }
       engine.rotateGhost()
       buzz(8)
       rotateBtn.textContent = t('rotate', { deg: engine.placeOrientation })
@@ -1349,7 +1381,7 @@ function placementScreen(): HTMLElement {
     }),
   )
 
-  // Show ghost when we can still place (or after pick-up)
+  // Only show sticky ghost when a free slot remains (never a 4th plane outline)
   if (engine.player(placeFor).planes.length < PLANES_PER_PLAYER && stickyGhost) {
     queueMicrotask(() => boardApi?.paintGhost(stickyGhost))
   }
@@ -1634,11 +1666,24 @@ function boardElement(opts: BoardOpts): BoardApi {
   let lastGhost: Coord | null = null
 
   const paintGhost = (head: Coord | null) => {
-    lastGhost = head
     for (const row of cellNodes) {
       for (const node of row) node.classList.remove('ghost-ok', 'ghost-bad')
     }
+    // Placement: never preview a plane when fleet is already full (would look like a 4th plane)
+    if (
+      head &&
+      opts.mode === 'own' &&
+      opts.dragPlanes &&
+      engine.player(opts.playerId).planes.length >= PLANES_PER_PLAYER
+    ) {
+      lastGhost = null
+      engine.setGhost(null)
+      opts.onGhost?.(null)
+      return
+    }
+    lastGhost = head
     if (!head || !opts.ghost) {
+      if (!head) engine.setGhost(null)
       opts.onGhost?.(head)
       return
     }
