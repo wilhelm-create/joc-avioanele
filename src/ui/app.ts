@@ -958,52 +958,6 @@ function placementScreen(): HTMLElement {
     }),
   ])
 
-  const syncOrientUi = (deg: number) => {
-    for (const btn of orientBtns) {
-      btn.classList.toggle('active', btn.getAttribute('data-orient') === String(deg))
-      btn.setAttribute('aria-pressed', btn.getAttribute('data-orient') === String(deg) ? 'true' : 'false')
-    }
-    rotateLabel.textContent = t('rotate', { deg })
-    const head = stickyGhost ?? engine.ghostHead ?? defaultGhost
-    stickyGhost = head
-    boardApi?.paintGhost(head)
-  }
-
-  // Orientation pad — 4 big direction buttons (primary rotate UX on mobile)
-  const orientPad = el('div', {
-    className: 'orient-pad',
-    role: 'group',
-    'aria-label': t('rotate', { deg: engine.placeOrientation }),
-  })
-  const orients: { o: 0 | 90 | 180 | 270; icon: string; label: string }[] = [
-    { o: 0, icon: '↑', label: '0°' },
-    { o: 90, icon: '→', label: '90°' },
-    { o: 180, icon: '↓', label: '180°' },
-    { o: 270, icon: '←', label: '270°' },
-  ]
-  const orientBtns: HTMLButtonElement[] = []
-  for (const { o, icon, label } of orients) {
-    const b = el('button', {
-      type: 'button',
-      className: `orient-btn ${engine.placeOrientation === o ? 'active' : ''}`,
-      text: icon,
-      'data-orient': String(o),
-      title: label,
-      'aria-label': label,
-      'aria-pressed': engine.placeOrientation === o ? 'true' : 'false',
-      onClick: (e: Event) => {
-        e.preventDefault()
-        e.stopPropagation()
-        engine.setOrientation(o)
-        buzz(8)
-        syncOrientUi(o)
-      },
-    }) as HTMLButtonElement
-    orientBtns.push(b)
-    orientPad.appendChild(b)
-  }
-  screen.appendChild(orientPad)
-
   boardApi = boardElement({
     mode: 'own',
     playerId: placeFor,
@@ -1044,10 +998,11 @@ function placementScreen(): HTMLElement {
       }
     },
   })
+  // Board first — controls (including rotate) go below the field
   screen.appendChild(boardApi.wrap)
 
-  const rotateLabel = el('button', {
-    className: 'btn btn-accent',
+  const rotateBtn = el('button', {
+    className: 'btn btn-accent btn-block',
     type: 'button',
     'data-action': 'rotate',
     text: t('rotate', { deg: engine.placeOrientation }),
@@ -1056,9 +1011,15 @@ function placementScreen(): HTMLElement {
       e.stopPropagation()
       engine.rotateGhost()
       buzz(8)
-      syncOrientUi(engine.placeOrientation)
+      rotateBtn.textContent = t('rotate', { deg: engine.placeOrientation })
+      const head = stickyGhost ?? engine.ghostHead ?? defaultGhost
+      stickyGhost = head
+      boardApi?.paintGhost(head)
     },
   }) as HTMLButtonElement
+
+  // Single rotate button directly under the board
+  screen.appendChild(rotateBtn)
 
   const doneBtn = el('button', {
     className: 'btn btn-primary btn-block',
@@ -1078,7 +1039,6 @@ function placementScreen(): HTMLElement {
 
   screen.appendChild(
     el('div', { className: 'toolbar' }, [
-      rotateLabel,
       el('button', {
         className: 'btn btn-sky',
         'data-action': 'auto-place',
