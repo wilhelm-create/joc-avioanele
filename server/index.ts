@@ -17,7 +17,6 @@ import {
 const PORT = Number(process.env.PORT) || 3000
 const app = createApp()
 
-/** Local / long-running Node: HTTP + optional WebSocket upgrade */
 const server = createServer(app)
 const wss = new WebSocketServer({ server, path: '/ws' })
 
@@ -60,41 +59,34 @@ wss.on('connection', (ws: AuthedSocket, req) => {
       return
     }
     if (!ws.userId || !ws.username) return
-    try {
-      handleWs(ws, msg)
-    } catch (e) {
+    void handleWs(ws, msg).catch((e) => {
       send(ws, { type: 'error', error: (e as Error).message })
-    }
+    })
   })
 
   ws.on('close', () => {
-    if (ws.userId) leaveAll(ws.userId)
+    if (ws.userId) void leaveAll(ws.userId)
   })
 })
 
-function handleWs(ws: AuthedSocket, msg: { type: string; [k: string]: unknown }) {
+async function handleWs(ws: AuthedSocket, msg: { type: string; [k: string]: unknown }) {
   const userId = ws.userId!
   const username = ws.username!
 
   switch (msg.type) {
     case 'create-room': {
-      const room = createRoom(userId, username)
+      const room = await createRoom(userId, username)
       send(ws, { type: 'room', room: roomPublic(room), role: 'p1' })
       break
     }
     case 'join-room': {
-      const room = joinRoom(String(msg.code || ''), userId, username)
+      const room = await joinRoom(String(msg.code || ''), userId, username)
       const me = room.players.get(userId)!
       send(ws, { type: 'room', room: roomPublic(room), role: me.role })
-      // notify via event log; WS peers poll or we fan-out if we tracked sockets — use events only for HTTP
-      // For WS, re-send room update by scanning is hard without socket map; push event for HTTP clients
-      if (room.players.size === 2) {
-        pushEvent(room, userId, username, { type: 'both-joined' })
-      }
       break
     }
     case 'leave-room': {
-      leaveAll(userId)
+      await leaveAll(userId)
       send(ws, { type: 'left' })
       break
     }
@@ -104,27 +96,28 @@ function handleWs(ws: AuthedSocket, msg: { type: string; [k: string]: unknown })
     case 'radar':
     case 'rematch':
     case 'chat': {
-      const room = getRoomByUser(userId)
-      if (!room) throw new Error('Nu ești într-o cameră')
+      const room = await getRoomByUser(userId)
+      if (!room) throw new Error('NOT_IN_ROOM')
       if (msg.type === 'ready') {
-        const both = markReady(room.code, userId)
-        pushEvent(room, userId, username, { type: 'ready', userId })
-        if (both) pushEvent(room, userId, username, { type: 'start-battle' })
-        send(ws, { type: 'ready', userId, room: roomPublic(room) })
+        const both = await markReady(room.code, userId)
+        let updated = await pushEvent(room.code, userId, username, { type: 'ready', userId })
+        if (both) {
+          updated = await pushEvent(room.code, userId, username, { type: 'start-battle' })
+        }
+        if (updated) send(ws, { type: 'ready', userId, room: roomPublic(updated) })
         break
       }
-      pushEvent(room, userId, username, { ...msg })
+      await pushEvent(room.code, userId, username, { ...msg })
       break
     }
     case 'ping':
       send(ws, { type: 'pong' })
       break
     default:
-      send(ws, { type: 'error', error: `Tip necunoscut: ${msg.type}` })
+      send(ws, { type: 'error', error: `UNKNOWN_TYPE` })
   }
 }
 
-// Only listen when not imported as Vercel handler
 if (!process.env.VERCEL) {
   server.listen(PORT, () => {
     console.log(`Avioane server http://localhost:${PORT}  (ws /ws)`)

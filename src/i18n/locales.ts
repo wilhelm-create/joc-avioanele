@@ -79,7 +79,11 @@ export const locales: Record<Lang, Dict> = {
     roomCodePlaceholder: 'ex: K7M2P',
     enterRoom: 'Intră în joc',
     invalidCode: 'Cod invalid',
+    roomNotFound: 'Camera nu există sau a expirat. Cere gazdei un link nou.',
+    roomFull: 'Camera e plină (maxim 2 jucători).',
+    notInRoom: 'Nu ești într-o cameră.',
     lobbyLoading: 'Se încarcă lobby-ul…',
+    joinRetry: 'Reîncearcă intrarea în joc',
 
     roomReadyInvite:
       'Camera e gata. Invită prietenul — el joacă de pe device-ul lui.',
@@ -231,7 +235,11 @@ export const locales: Record<Lang, Dict> = {
     roomCodePlaceholder: 'e.g. K7M2P',
     enterRoom: 'Join game',
     invalidCode: 'Invalid code',
+    roomNotFound: 'Room does not exist or expired. Ask the host for a new link.',
+    roomFull: 'Room is full (max 2 players).',
+    notInRoom: 'You are not in a room.',
     lobbyLoading: 'Loading lobby…',
+    joinRetry: 'Retry joining the game',
 
     roomReadyInvite: 'Room is ready. Invite your friend — they play on their device.',
     roomBothConnected: 'Room {code} · both of you are connected',

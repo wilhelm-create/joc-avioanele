@@ -138,7 +138,15 @@ export async function mountApp(root: HTMLElement) {
   }
 }
 
-async function acceptPendingInvite() {
+function mapRoomError(msg: string): string {
+  const m = msg.trim()
+  if (m === 'ROOM_NOT_FOUND' || /nu există|does not exist/i.test(m)) return t('roomNotFound')
+  if (m === 'ROOM_FULL' || /plină|full/i.test(m)) return t('roomFull')
+  if (m === 'NOT_IN_ROOM') return t('notInRoom')
+  return msg
+}
+
+async function acceptPendingInvite(retries = 2) {
   const code = pendingInviteCode
   if (!code || !currentUser) return
   statusNote = t('connectingRoom', { code })
@@ -149,12 +157,58 @@ async function acceptPendingInvite() {
     engine.mode = 'online-join'
     myOnlineRole = 'p2'
     roomCode = code
-    socket.send({ type: 'join-room', code })
+    // join via HTTP immediately (more reliable than fire-and-forget send)
+    await joinRoomHttp(code)
     clearInviteFromUrl()
     pendingInviteCode = null
   } catch (e) {
-    statusNote = (e as Error).message
-    pendingInviteCode = null
+    const raw = (e as Error).message
+    if (retries > 0 && /ROOM_NOT_FOUND|nu există/i.test(raw)) {
+      // brief wait in case host write is still propagating
+      await new Promise((r) => setTimeout(r, 800))
+      return acceptPendingInvite(retries - 1)
+    }
+    statusNote = mapRoomError(raw)
+    // keep pendingInviteCode so user can retry with same invite
+    paint()
+  }
+}
+
+async function joinRoomHttp(code: string) {
+  const token = getToken()
+  const res = await fetch('/api/rooms/join', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ code }),
+  })
+  const data = (await res.json().catch(() => ({}))) as {
+    error?: string
+    room?: RoomInfo
+    role?: PlayerId
+  }
+  if (!res.ok) throw new Error(data.error || `Eroare ${res.status}`)
+  if (data.room) {
+    roomInfo = data.room
+    roomCode = data.room.code
+    if (data.role) myOnlineRole = data.role
+    // drive UI the same way socket join would
+    if (data.room.players.length >= 2) {
+      // both-joined path
+      statusNote = t('friendJoined')
+      engine.mode = myOnlineRole === 'p1' ? 'online-host' : 'online-join'
+      const p1 = data.room.players.find((p) => p.role === 'p1')
+      const p2 = data.room.players.find((p) => p.role === 'p2')
+      if (p1) engine.p1.name = p1.username
+      if (p2) engine.p2.name = p2.username
+      engine.beginOnlinePlacement()
+      uiPhase = 'placement'
+    } else {
+      statusNote = t('roomReadyInvite')
+      uiPhase = 'online-lobby'
+    }
     paint()
   }
 }
@@ -270,8 +324,8 @@ function handleServer(msg: ServerMessage) {
       paint()
       break
     case 'error':
-      statusNote = msg.error
-      authError = msg.error
+      statusNote = mapRoomError(msg.error)
+      authError = mapRoomError(msg.error)
       paint()
       break
     default:
@@ -757,7 +811,7 @@ function onlineLobbyScreen(): HTMLElement {
             : t('bothOnline'),
       }),
     )
-  } else if (needJoinForm) {
+  } else if (needJoinForm || pendingInviteCode) {
     const codeInput = el('input', {
       type: 'text',
       id: 'join-code',
@@ -766,6 +820,7 @@ function onlineLobbyScreen(): HTMLElement {
       'aria-label': t('roomCode'),
       style: 'text-transform:uppercase;letter-spacing:0.15em;font-weight:700',
     }) as HTMLInputElement
+    if (pendingInviteCode) codeInput.value = pendingInviteCode
     card.append(
       el('p', {
         className: 'hint',
@@ -775,7 +830,7 @@ function onlineLobbyScreen(): HTMLElement {
       el('button', {
         className: 'btn btn-sky btn-block',
         'data-action': 'join-room',
-        text: t('enterRoom'),
+        text: pendingInviteCode && statusNote ? t('joinRetry') : t('enterRoom'),
         onClick: async () => {
           const code = codeInput.value.trim().toUpperCase()
           if (code.length < 4) {
@@ -792,7 +847,7 @@ function onlineLobbyScreen(): HTMLElement {
     card.appendChild(el('p', { className: 'hint', text: statusNote || t('lobbyLoading') }))
   }
 
-  if (statusNote) card.appendChild(el('div', { className: 'banner', text: statusNote }))
+  if (statusNote) card.appendChild(el('div', { className: 'banner hit', text: statusNote }))
 
   card.appendChild(
     el('button', {

@@ -186,36 +186,45 @@ export function createApp() {
     res.json({ mode: 'client', body, phone: digits })
   })
 
-  /* ——— HTTP multiplayer (Vercel-safe) ——— */
+  /* ——— HTTP multiplayer (durable rooms on Blob/local) ——— */
 
-  app.post('/api/rooms/create', requireAuth, (req, res) => {
-    const user = (req as express.Request & { user: PublicUser }).user
-    const room = createRoom(user.id, user.username)
-    res.json({ room: roomPublic(room), role: 'p1' })
-  })
-
-  app.post('/api/rooms/join', requireAuth, (req, res) => {
+  app.post('/api/rooms/create', requireAuth, async (req, res) => {
     try {
       const user = (req as express.Request & { user: PublicUser }).user
-      const code = String((req.body as { code?: string }).code || '').toUpperCase()
-      const room = joinRoom(code, user.id, user.username)
-      const me = room.players.get(user.id)!
-      res.json({ room: roomPublic(room), role: me.role })
+      const room = await createRoom(user.id, user.username)
+      res.json({ room: roomPublic(room), role: 'p1' })
     } catch (e) {
-      res.status(400).json({ error: (e as Error).message })
+      res.status(500).json({ error: (e as Error).message })
     }
   })
 
-  app.post('/api/rooms/leave', requireAuth, (req, res) => {
+  app.post('/api/rooms/join', requireAuth, async (req, res) => {
+    try {
+      const user = (req as express.Request & { user: PublicUser }).user
+      const code = String((req.body as { code?: string }).code || '').toUpperCase().trim()
+      if (code.length < 4) {
+        res.status(400).json({ error: 'ROOM_NOT_FOUND' })
+        return
+      }
+      const room = await joinRoom(code, user.id, user.username)
+      const me = room.players.get(user.id)!
+      res.json({ room: roomPublic(room), role: me.role })
+    } catch (e) {
+      const msg = (e as Error).message
+      res.status(400).json({ error: msg })
+    }
+  })
+
+  app.post('/api/rooms/leave', requireAuth, async (req, res) => {
     const user = (req as express.Request & { user: PublicUser }).user
-    leaveAll(user.id)
+    await leaveAll(user.id)
     res.json({ ok: true })
   })
 
-  app.get('/api/rooms/mine', requireAuth, (req, res) => {
+  app.get('/api/rooms/mine', requireAuth, async (req, res) => {
     const user = (req as express.Request & { user: PublicUser }).user
-    heartbeat(user.id)
-    const room = getRoomByUser(user.id)
+    await heartbeat(user.id)
+    const room = await getRoomByUser(user.id)
     if (!room) {
       res.json({ room: null })
       return
@@ -224,56 +233,63 @@ export function createApp() {
     res.json({ room: roomPublic(room), role: me?.role ?? null })
   })
 
-  app.get('/api/rooms/poll', requireAuth, (req, res) => {
-    const user = (req as express.Request & { user: PublicUser }).user
-    heartbeat(user.id)
-    const room = getRoomByUser(user.id)
-    if (!room) {
-      res.json({ room: null, events: [], bothJoined: false })
-      return
-    }
-    const after = Number(req.query.after || 0)
-    const events = pollEvents(room, after).filter((e) => e.from !== user.id)
-    res.json({
-      room: roomPublic(room),
-      events: events.map((e) => ({
-        id: e.id,
-        from: e.from,
-        fromName: e.fromName,
-        ...e.payload,
-      })),
-      bothJoined: room.players.size >= 2,
-      bothReady: room.ready.size >= 2,
-    })
-  })
-
-  app.post('/api/rooms/event', requireAuth, (req, res) => {
+  app.get('/api/rooms/poll', requireAuth, async (req, res) => {
     try {
       const user = (req as express.Request & { user: PublicUser }).user
-      const room = getRoomByUser(user.id)
+      await heartbeat(user.id)
+      const room = await getRoomByUser(user.id)
       if (!room) {
-        res.status(400).json({ error: 'Nu ești într-o cameră' })
+        res.json({ room: null, events: [], bothJoined: false, bothReady: false })
+        return
+      }
+      const after = Number(req.query.after || 0)
+      const events = pollEvents(room, after).filter((e) => e.from !== user.id)
+      res.json({
+        room: roomPublic(room),
+        events: events.map((e) => ({
+          id: e.id,
+          from: e.from,
+          fromName: e.fromName,
+          ...e.payload,
+        })),
+        bothJoined: room.players.size >= 2,
+        bothReady: room.ready.size >= 2,
+      })
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message })
+    }
+  })
+
+  app.post('/api/rooms/event', requireAuth, async (req, res) => {
+    try {
+      const user = (req as express.Request & { user: PublicUser }).user
+      let room = await getRoomByUser(user.id)
+      if (!room) {
+        res.status(400).json({ error: 'NOT_IN_ROOM' })
         return
       }
       const body = req.body as Record<string, unknown>
       const type = String(body.type || '')
       if (!type) {
-        res.status(400).json({ error: 'type lipsă' })
+        res.status(400).json({ error: 'MISSING_TYPE' })
         return
       }
 
       if (type === 'ready') {
-        const both = markReady(room.code, user.id)
-        pushEvent(room, user.id, user.username, { type: 'ready', userId: user.id })
+        const both = await markReady(room.code, user.id)
+        room = (await pushEvent(room.code, user.id, user.username, {
+          type: 'ready',
+          userId: user.id,
+        }))!
         if (both) {
-          pushEvent(room, user.id, user.username, { type: 'start-battle' })
+          room = (await pushEvent(room.code, user.id, user.username, { type: 'start-battle' }))!
         }
         res.json({ ok: true, room: roomPublic(room), bothReady: both })
         return
       }
 
-      pushEvent(room, user.id, user.username, body)
-      res.json({ ok: true })
+      room = (await pushEvent(room.code, user.id, user.username, body))!
+      res.json({ ok: true, room: roomPublic(room) })
     } catch (e) {
       res.status(400).json({ error: (e as Error).message })
     }
@@ -289,10 +305,11 @@ export function createApp() {
     })
   }
 
-  // periodic cleanup
   if (!(globalThis as { __avioaneCleanup?: boolean }).__avioaneCleanup) {
     ;(globalThis as { __avioaneCleanup?: boolean }).__avioaneCleanup = true
-    setInterval(cleanupRooms, 15 * 60 * 1000)
+    setInterval(() => {
+      void cleanupRooms()
+    }, 15 * 60 * 1000)
   }
 
   return app
