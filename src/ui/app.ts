@@ -108,6 +108,11 @@ export async function mountApp(root: HTMLElement) {
         void maybeReportMatch()
       } else if (engine.phase === 'online-lobby') uiPhase = 'online-lobby'
     }
+    // In battle, update cells/banner in-place — no full DOM wipe (no visible flash)
+    if (uiPhase === 'battle' && engine.phase === 'battle') {
+      softRefreshBattle()
+      return
+    }
     paint()
   })
 
@@ -287,26 +292,38 @@ function handleServer(msg: ServerMessage) {
           ? t('battleStartYou')
           : t('battleStartWait', { name: engine.p1.name })
       uiPhase = 'battle'
-      engine.notify()
+      socket.setFastPoll(true)
+      paint()
       break
     case 'placement':
       if (msg.player !== myOnlineRole) {
         engine.applyRemotePlacement(msg.player, msg.data)
-        // if we already placed, try start
         if (myOnlineRole) engine.markOnlineReady(myOnlineRole)
       }
       break
     case 'shot':
-      if (msg.player !== myOnlineRole) {
-        const result = engine.fire(msg.coord, msg.player)
-        playShotFx(result)
-        uiPhase = 'battle'
+      // Apply remote bomb for every peer (skip only our own echo if any)
+      if (msg.coord && msg.player && msg.player !== myOnlineRole) {
+        const result = engine.fire(msg.coord, msg.player, { force: true, silent: true })
+        if (result.kind !== 'already') {
+          playShotFx(result)
+          if (engine.phase === 'game-over') {
+            uiPhase = 'game-over'
+            paint()
+            void maybeReportMatch()
+          } else {
+            uiPhase = 'battle'
+            softRefreshBattle(msg.coord)
+          }
+        }
       }
       break
     case 'radar':
-      if (msg.player !== myOnlineRole) {
+      if (msg.player && msg.player !== myOnlineRole) {
         engine.useRadar(msg.player)
         sfxRadar()
+        if (uiPhase === 'battle') softRefreshBattle()
+        else paint()
       }
       break
     case 'rematch':
@@ -902,8 +919,12 @@ function placementScreen(): HTMLElement {
   const placeFor = myOnlineRole ?? engine.placingPlayer
   const p = engine.player(placeFor)
   const canPlace = p.planes.length < PLANES_PER_PLAYER
+  // Default ghost on grid center so rotation is always visible (mobile + desktop)
+  const defaultGhost: Coord = { r: Math.floor(GRID / 2), c: Math.floor(GRID / 2) }
+  let stickyGhost: Coord | null = engine.ghostHead ?? (canPlace ? defaultGhost : null)
+  let boardApi: BoardApi | null = null
 
-  return el('div', { className: 'screen', 'data-screen': 'placement' }, [
+  const screen = el('div', { className: 'screen', 'data-screen': 'placement' }, [
     el('div', { className: 'player-pill' }, [
       el('span', { className: 'dot', style: `background:${p.color}` }),
       el('span', { text: `${p.name} — ${t('yourFleet')} ${p.planes.length}/${PLANES_PER_PLAYER}` }),
@@ -912,37 +933,102 @@ function placementScreen(): HTMLElement {
       className: 'banner',
       text: engine.message || t('placeBanner'),
     }),
-    boardElement({
-      mode: 'own',
-      playerId: placeFor,
-      interactive: canPlace,
-      showFleet: true,
-      ghost: true,
-      onCell: (coord) => {
-        if (!canPlace) return
-        engine.placingPlayer = placeFor
-        engine.setGhost(coord)
-        if (engine.placePlane(coord)) {
-          sfxPlace()
-          if (engine.player(placeFor).planes.length >= PLANES_PER_PLAYER) {
-            finishPlacementAndNotify(placeFor)
-          }
-        } else {
-          buzz(30)
-          screenShake(document.getElementById('app'))
-        }
+  ])
+
+  const syncOrientUi = (deg: number) => {
+    for (const btn of orientBtns) {
+      btn.classList.toggle('active', btn.getAttribute('data-orient') === String(deg))
+    }
+    rotateLabel.textContent = t('rotate', { deg })
+    const head = stickyGhost ?? engine.ghostHead ?? defaultGhost
+    stickyGhost = head
+    boardApi?.paintGhost(head)
+  }
+
+  // Orientation pad — 4 big direction buttons (primary rotate UX on mobile)
+  const orientPad = el('div', {
+    className: 'orient-pad',
+    role: 'group',
+    'aria-label': t('rotate', { deg: engine.placeOrientation }),
+  })
+  const orients: { o: 0 | 90 | 180 | 270; icon: string; label: string }[] = [
+    { o: 0, icon: '↑', label: '0°' },
+    { o: 90, icon: '→', label: '90°' },
+    { o: 180, icon: '↓', label: '180°' },
+    { o: 270, icon: '←', label: '270°' },
+  ]
+  const orientBtns: HTMLButtonElement[] = []
+  for (const { o, icon, label } of orients) {
+    const b = el('button', {
+      type: 'button',
+      className: `orient-btn ${engine.placeOrientation === o ? 'active' : ''}`,
+      text: icon,
+      'data-orient': String(o),
+      title: label,
+      'aria-label': label,
+      'aria-pressed': engine.placeOrientation === o ? 'true' : 'false',
+      onClick: (e: Event) => {
+        e.preventDefault()
+        e.stopPropagation()
+        engine.setOrientation(o)
+        buzz(8)
+        syncOrientUi(o)
       },
-    }),
+    }) as HTMLButtonElement
+    orientBtns.push(b)
+    orientPad.appendChild(b)
+  }
+  screen.appendChild(orientPad)
+
+  boardApi = boardElement({
+    mode: 'own',
+    playerId: placeFor,
+    interactive: canPlace,
+    showFleet: true,
+    ghost: true,
+    stickyGhost: true,
+    onGhost: (c) => {
+      if (c) stickyGhost = c
+    },
+    onCell: (coord) => {
+      if (!canPlace) return
+      engine.placingPlayer = placeFor
+      engine.setGhost(coord)
+      stickyGhost = coord
+      if (engine.placePlane(coord)) {
+        sfxPlace()
+        stickyGhost = defaultGhost
+        if (engine.player(placeFor).planes.length >= PLANES_PER_PLAYER) {
+          finishPlacementAndNotify(placeFor)
+        } else {
+          paint() // place another plane
+        }
+      } else {
+        buzz(30)
+        screenShake(document.getElementById('app'))
+        boardApi?.paintGhost(coord)
+      }
+    },
+  })
+  screen.appendChild(boardApi.wrap)
+
+  const rotateLabel = el('button', {
+    className: 'btn btn-accent',
+    type: 'button',
+    'data-action': 'rotate',
+    text: t('rotate', { deg: engine.placeOrientation }),
+    onClick: (e: Event) => {
+      e.preventDefault()
+      e.stopPropagation()
+      engine.rotateGhost()
+      buzz(8)
+      syncOrientUi(engine.placeOrientation)
+    },
+  }) as HTMLButtonElement
+
+  screen.appendChild(
     el('div', { className: 'toolbar' }, [
-      el('button', {
-        className: 'btn btn-accent',
-        'data-action': 'rotate',
-        text: t('rotate', { deg: engine.placeOrientation }),
-        onClick: () => {
-          engine.rotateGhost()
-          buzz(8)
-        },
-      }),
+      rotateLabel,
       el('button', {
         className: 'btn btn-sky',
         'data-action': 'auto-place',
@@ -962,14 +1048,25 @@ function placementScreen(): HTMLElement {
         onClick: () => {
           engine.placingPlayer = placeFor
           engine.clearPlacement()
+          stickyGhost = defaultGhost
+          paint()
         },
       }),
     ]),
+  )
+  screen.appendChild(
     el('p', {
       className: 'hint',
       text: t('cabinHint'),
     }),
-  ])
+  )
+
+  // Show ghost immediately so rotate/orient pad is meaningful before first tap
+  if (canPlace && stickyGhost) {
+    queueMicrotask(() => boardApi?.paintGhost(stickyGhost))
+  }
+
+  return screen
 }
 
 function battleScreen(): HTMLElement {
@@ -1015,19 +1112,27 @@ function battleScreen(): HTMLElement {
       boardElement({
         mode: 'enemy',
         playerId: me,
-        interactive: isMyTurn,
+        interactive: true, // live turn check inside onCell (soft refresh must not stale-close)
         showFleet: false,
         ghost: false,
         title: isMyTurn ? t('attackHere') : t('targetWait'),
         onCell: (coord, cellEl) => {
-          if (!isMyTurn) return
-          const result = engine.fire(coord, me)
+          // Always read live turn — softRefreshBattle must not leave stale closures
+          if (engine.currentPlayer !== me || engine.phase !== 'battle') return
+          const result = engine.fire(coord, me, { silent: true })
           playShotFx(result, cellEl)
-          if (result.kind !== 'already') {
-            socket.send({ type: 'shot', player: me, coord })
+          if (result.kind === 'already') return
+          socket.send({ type: 'shot', player: me, coord })
+          // fire() may set winner / phase; prefer winner flag (avoids TS phase narrowing)
+          if (engine.winner) {
+            uiPhase = 'game-over'
+            paint()
+            void maybeReportMatch()
+          } else {
+            softRefreshBattle(coord)
           }
         },
-      }),
+      }).wrap,
       boardElement({
         mode: 'own',
         playerId: me,
@@ -1035,7 +1140,7 @@ function battleScreen(): HTMLElement {
         showFleet: true,
         ghost: false,
         title: t('yourFleetBoard'),
-      }),
+      }).wrap,
     ]),
     el('div', { className: 'toolbar' }, [
       el('button', {
@@ -1044,7 +1149,7 @@ function battleScreen(): HTMLElement {
         disabled: myPlayer.radarUsed || !isMyTurn,
         text: myPlayer.radarUsed ? t('radarUsed') : t('radarCookie'),
         onClick: () => {
-          if (!isMyTurn) return
+          if (engine.currentPlayer !== me || engine.phase !== 'battle') return
           const cells = engine.useRadar(me)
           if (cells.length) {
             sfxRadar()
@@ -1053,6 +1158,7 @@ function battleScreen(): HTMLElement {
               const rect = app.getBoundingClientRect()
               glitterBurst(rect.width / 2, rect.height * 0.35, 20)
             }
+            softRefreshBattle()
           }
           socket.send({ type: 'radar', player: me })
         },
@@ -1176,11 +1282,20 @@ interface BoardOpts {
   interactive: boolean
   showFleet: boolean
   ghost: boolean
+  /** Keep last ghost when pointer leaves (mobile-friendly rotate) */
+  stickyGhost?: boolean
   title?: string
   onCell?: (coord: Coord, cellEl: HTMLElement) => void
+  onGhost?: (coord: Coord | null) => void
 }
 
-function boardElement(opts: BoardOpts): HTMLElement {
+interface BoardApi {
+  wrap: HTMLElement
+  paintGhost: (head: Coord | null) => void
+  refreshCells: () => void
+}
+
+function boardElement(opts: BoardOpts): BoardApi {
   const wrap = el('div', { className: 'board-wrap' })
   if (opts.title) wrap.appendChild(el('div', { className: 'board-title', text: opts.title }))
 
@@ -1198,12 +1313,17 @@ function boardElement(opts: BoardOpts): HTMLElement {
 
   const player = engine.player(opts.playerId)
   const cellNodes: HTMLElement[][] = []
+  let lastGhost: Coord | null = null
 
-  const paintGhost = (head: { r: number; c: number } | null) => {
+  const paintGhost = (head: Coord | null) => {
+    lastGhost = head
     for (const row of cellNodes) {
       for (const node of row) node.classList.remove('ghost-ok', 'ghost-bad')
     }
-    if (!head || !opts.ghost) return
+    if (!head || !opts.ghost) {
+      opts.onGhost?.(head)
+      return
+    }
     engine.setGhost(head)
     const cells = engine.getGhostCells()
     const ok = engine.isGhostValid()
@@ -1212,6 +1332,28 @@ function boardElement(opts: BoardOpts): HTMLElement {
         cellNodes[g.r][g.c].classList.add(ok ? 'ghost-ok' : 'ghost-bad')
       }
     }
+    opts.onGhost?.(head)
+  }
+
+  const refreshCells = () => {
+    const pl = engine.player(opts.playerId)
+    for (let r = 0; r < GRID; r++) {
+      for (let c = 0; c < GRID; c++) {
+        const state =
+          opts.mode === 'own'
+            ? engine.cellDisplayOwn(pl, r, c)
+            : engine.cellDisplayEnemy(pl, r, c)
+        const cell = cellNodes[r][c]
+        const classes = ['cell', state]
+        if (!opts.interactive) classes.push('disabled')
+        if (opts.mode === 'enemy' && opts.interactive) classes.push('enemy-target')
+        // preserve ghost classes if any
+        if (cell.classList.contains('ghost-ok')) classes.push('ghost-ok')
+        if (cell.classList.contains('ghost-bad')) classes.push('ghost-bad')
+        cell.className = classes.join(' ')
+      }
+    }
+    if (lastGhost && opts.ghost) paintGhost(lastGhost)
   }
 
   for (let r = 0; r < GRID; r++) {
@@ -1237,6 +1379,10 @@ function boardElement(opts: BoardOpts): HTMLElement {
       cellNodes[r][c] = cell
 
       if (opts.interactive || opts.ghost) {
+        // Ghost preview on touch/hover — do NOT preventDefault (that kills click on iOS)
+        cell.addEventListener('pointerdown', () => {
+          if (opts.ghost) paintGhost({ r, c })
+        })
         cell.addEventListener('pointerenter', () => {
           if (opts.ghost) paintGhost({ r, c })
         })
@@ -1246,9 +1392,110 @@ function boardElement(opts: BoardOpts): HTMLElement {
     }
   }
 
-  if (opts.ghost) board.addEventListener('pointerleave', () => paintGhost(null))
+  if (opts.ghost && !opts.stickyGhost) {
+    board.addEventListener('pointerleave', () => paintGhost(null))
+  }
   wrap.appendChild(board)
-  return wrap
+  return { wrap, paintGhost, refreshCells }
+}
+
+/**
+ * Update battle UI in-place (no full re-render / no visible page flash).
+ * @param flashCoord optional cell to pulse (last bomb)
+ */
+function softRefreshBattle(flashCoord?: Coord) {
+  const screen = document.querySelector<HTMLElement>('[data-screen="battle"]')
+  if (!screen) {
+    if (uiPhase === 'battle' || engine.phase === 'battle') {
+      uiPhase = 'battle'
+      paint()
+    }
+    return
+  }
+
+  const me = myOnlineRole ?? engine.currentPlayer
+  const isMyTurn = engine.currentPlayer === me
+
+  const turnMsg = isMyTurn
+    ? engine.message || t('yourTurnAttack')
+    : t('waitPlayer', { name: engine.player(engine.currentPlayer).name })
+
+  const banner = screen.querySelector('.banner')
+  if (banner) {
+    banner.textContent = turnMsg
+    banner.className =
+      engine.lastShot?.kind === 'hit'
+        ? 'banner hit'
+        : engine.lastShot?.kind === 'sunk'
+          ? 'banner sunk'
+          : engine.lastShot?.kind === 'miss'
+            ? 'banner miss'
+            : engine.message.includes('Radar')
+              ? 'banner radar'
+              : isMyTurn
+                ? 'banner'
+                : 'banner radar'
+  }
+
+  const pill = screen.querySelector('.player-pill span:last-child')
+  if (pill) {
+    pill.textContent = isMyTurn
+      ? t('yourTurn')
+      : t('turnOf', { name: engine.player(engine.currentPlayer).name })
+  }
+
+  const turnCount = screen.querySelector('.battle-top .hint')
+  if (turnCount) {
+    turnCount.textContent = t('turnCount', {
+      turn: engine.turn,
+      sunk: engine.opponent(me).planesSunk,
+    })
+  }
+
+  // Board titles (attack / wait)
+  const enemyTitle = screen.querySelector('[data-board="enemy"]')?.parentElement?.querySelector('.board-title')
+  if (enemyTitle) {
+    enemyTitle.textContent = isMyTurn ? t('attackHere') : t('targetWait')
+  }
+
+  // refresh cell classes on both boards without rebuilding DOM
+  for (const mode of ['enemy', 'own'] as const) {
+    const board = screen.querySelector(`[data-board="${mode}"]`)
+    if (!board) continue
+    board.querySelectorAll<HTMLElement>('.cell').forEach((cell) => {
+      const r = Number(cell.dataset.r)
+      const c = Number(cell.dataset.c)
+      if (Number.isNaN(r) || Number.isNaN(c)) return
+      const state =
+        mode === 'own'
+          ? engine.cellDisplayOwn(engine.player(me), r, c)
+          : engine.cellDisplayEnemy(engine.player(me), r, c)
+      const classes = ['cell', state]
+      // Own fleet is view-only; enemy is clickable only on our turn
+      // Use data attribute for turn lock so CSS pointer-events stays correct
+      if (mode === 'own') classes.push('disabled')
+      else if (!isMyTurn) classes.push('disabled')
+      if (mode === 'enemy' && isMyTurn) classes.push('enemy-target')
+      if (flashCoord && flashCoord.r === r && flashCoord.c === c) classes.push('cell-flash')
+      // Also flash sunk cells from last shot
+      if (
+        engine.lastShot?.kind === 'sunk' &&
+        engine.lastShot.sunkCells?.some((sc) => sc.r === r && sc.c === c)
+      ) {
+        classes.push('cell-flash')
+      }
+      cell.className = classes.join(' ')
+    })
+  }
+
+  const radarBtn = screen.querySelector<HTMLButtonElement>('[data-action="radar"]')
+  if (radarBtn) {
+    const used = engine.player(me).radarUsed
+    radarBtn.disabled = used || !isMyTurn
+    radarBtn.textContent = used ? t('radarUsed') : t('radarCookie')
+  }
+
+  socket.setFastPoll(true)
 }
 
 function playShotFx(result: ShotResult, cellEl?: HTMLElement) {

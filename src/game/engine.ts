@@ -167,9 +167,13 @@ export class GameEngine {
     this.emit()
   }
 
+  /** Rotate placement ghost; does not re-render whole UI (caller repaints ghost). */
   rotateGhost() {
     this.placeOrientation = ((this.placeOrientation + 90) % 360) as Orientation
-    this.emit()
+  }
+
+  setOrientation(o: Orientation) {
+    this.placeOrientation = o
   }
 
   /** Update ghost without notifying UI (UI paints ghost in-place to avoid full re-renders). */
@@ -310,27 +314,37 @@ export class GameEngine {
     this.emit()
   }
 
-  fire(at: Coord, by?: PlayerId): ShotResult {
+  /**
+   * @param opts.force — apply even if turn pointer is desynced (remote multiplayer)
+   * @param opts.silent — don't notify UI listeners (caller does soft update)
+   */
+  fire(
+    at: Coord,
+    by?: PlayerId,
+    opts?: { force?: boolean; silent?: boolean },
+  ): ShotResult {
     if (this.phase !== 'battle') {
       return { coord: at, kind: 'already' }
     }
     const shooterId = by ?? this.currentPlayer
-    if (shooterId !== this.currentPlayer) {
+    if (!opts?.force && shooterId !== this.currentPlayer) {
       return { coord: at, kind: 'already' }
     }
+    // remote force: align turn so state stays consistent
+    if (opts?.force) this.currentPlayer = shooterId
+
     const shooter = this.player(shooterId)
     const target = this.opponent(shooterId)
     const k = key(at.r, at.c)
 
     if (shooter.fired.has(k) && shooter.fired.get(k) !== 'radar') {
       this.message = t('engineAlreadyShot')
-      this.emit()
+      if (!opts?.silent) this.emit()
       return { coord: at, kind: 'already' }
     }
-    // allow firing on radar-revealed water (it's still a miss confirmation) — but radar marks empty
     if (shooter.fired.get(k) === 'miss' || shooter.fired.get(k) === 'hit' || shooter.fired.get(k) === 'sunk') {
       this.message = t('engineAlreadyHere')
-      this.emit()
+      if (!opts?.silent) this.emit()
       return { coord: at, kind: 'already' }
     }
 
@@ -349,7 +363,6 @@ export class GameEngine {
       }
 
       if (fleetCell.isHead) {
-        // Destroy entire plane
         plane.sunk = true
         target.planesSunk++
         const sunkCells = [...plane.cells]
@@ -379,11 +392,10 @@ export class GameEngine {
       this.winner = shooterId
       this.phase = 'game-over'
       this.message = t('engineWin', { name: shooter.name })
-      this.emit()
+      if (!opts?.silent) this.emit()
       return result
     }
 
-    // switch turn
     if (this.mode === 'local') {
       this.phase = 'pass-device'
       this.currentPlayer = shooterId === 'p1' ? 'p2' : 'p1'
@@ -395,7 +407,7 @@ export class GameEngine {
       this.message = t('engineTurn', { name: this.player(this.currentPlayer).name })
     }
 
-    this.emit()
+    if (!opts?.silent) this.emit()
     return result
   }
 

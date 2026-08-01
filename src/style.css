@@ -1270,6 +1270,74 @@ html[data-theme='dark'] .room-code {
   justify-content: center;
 }
 
+/* ——— Placement orientation pad (mobile-first, large targets) ——— */
+.orient-pad {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  width: 100%;
+  max-width: 320px;
+  margin: 4px auto 12px;
+  padding: 10px;
+  border-radius: 16px;
+  background: color-mix(in oklch, var(--glass) 80%, transparent);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  box-shadow: 0 1px 0 var(--glass-inset) inset;
+}
+
+.orient-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 52px;
+  min-width: 52px;
+  border-radius: 14px;
+  border: 1.5px solid var(--border);
+  background: color-mix(in oklch, var(--surface) 88%, transparent);
+  color: var(--text);
+  font-size: 1.45rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background 160ms ease-out, border-color 160ms ease-out, transform 120ms ease-out;
+}
+
+.orient-btn:hover {
+  border-color: color-mix(in oklch, var(--violet) 50%, var(--border));
+}
+
+.orient-btn:active {
+  transform: scale(0.96);
+}
+
+.orient-btn.active {
+  background: color-mix(in oklch, var(--violet) 32%, var(--surface));
+  border-color: var(--violet);
+  color: var(--text);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--violet) 35%, transparent);
+}
+
+.orient-btn:focus-visible {
+  outline: 2px solid var(--violet);
+  outline-offset: 2px;
+}
+
+.cell.cell-flash {
+  animation: pulseHit 0.55s ease-out 1;
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--orange) 70%, transparent);
+  z-index: 1;
+}
+
+@media (hover: hover) {
+  .orient-btn:hover {
+    background: color-mix(in oklch, var(--violet) 14%, var(--surface));
+  }
+}
+
 @media (max-width: 360px) {
   :root {
     --cell: min(7.6vw, 30px);

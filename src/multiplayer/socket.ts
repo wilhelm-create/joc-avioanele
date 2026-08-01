@@ -40,15 +40,19 @@ export type Outgoing =
   | { type: 'ping' }
 
 /**
- * HTTP-polling multiplayer (works on Vercel serverless).
- * Locally also works via Vite proxy → Express.
+ * HTTP-polling multiplayer with fast battle updates (no full page reload).
  */
 export class GameSocket {
   private handlers = new Set<(msg: ServerMessage) => void>()
   connected = false
-  private pollTimer: number | null = null
+  private pollTimer: ReturnType<typeof setTimeout> | null = null
   private afterId = 0
   private lastPlayerCount = 0
+  private ticking = false
+  /** If a tick was requested while one was in flight, run again after */
+  private pendingTick = false
+  /** Faster while in battle / waiting for shots */
+  pollMs = 400
 
   private emit(msg: ServerMessage) {
     for (const h of this.handlers) h(msg)
@@ -67,73 +71,117 @@ export class GameSocket {
 
   async connect(): Promise<void> {
     this.close()
-    // health check proves API is up
     await this.api<{ ok: boolean }>('/api/health')
     this.connected = true
     this.afterId = 0
-    this.startPoll()
+    this.lastPlayerCount = 0
+    this.schedulePoll(0)
     this.emit({ type: 'welcome', user: { id: '', username: '' } })
   }
 
-  private startPoll() {
+  setFastPoll(fast: boolean) {
+    this.pollMs = fast ? 350 : 700
+  }
+
+  private schedulePoll(delay: number) {
     this.stopPoll()
-    const tick = async () => {
-      if (!this.connected) return
-      try {
-        const data = await this.api<{
-          room: RoomInfo | null
-          events: Array<ServerMessage & { id: number }>
-          bothJoined: boolean
-          bothReady: boolean
-        }>(`/api/rooms/poll?after=${this.afterId}`)
-
-        if (data.room) {
-          if (data.room.players.length !== this.lastPlayerCount) {
-            this.lastPlayerCount = data.room.players.length
-            this.emit({ type: 'room', room: data.room })
-            if (data.bothJoined && data.room.players.length >= 2) {
-              this.emit({ type: 'both-joined', room: data.room })
-            }
-          }
-        }
-
-        for (const ev of data.events) {
-          if (ev.id > this.afterId) this.afterId = ev.id
-          const { id: _id, ...rest } = ev
-          void _id
-          // normalize event shapes
-          if (rest.type === 'both-joined' && data.room) {
-            this.emit({ type: 'both-joined', room: data.room })
-          } else if (rest.type === 'start-battle' && data.room) {
-            this.emit({ type: 'start-battle', room: data.room })
-          } else if (rest.type === 'ready' && data.room) {
-            this.emit({
-              type: 'ready',
-              userId: String(rest.userId || ''),
-              room: data.room,
-            })
-          } else if (rest.type === 'peer-left') {
-            this.emit({ type: 'peer-left', userId: String(rest.userId || '') })
-          } else {
-            this.emit(rest as ServerMessage)
-          }
-        }
-
-        if (data.bothReady && data.room) {
-          // start-battle should also arrive as event; belt-and-suspenders
-        }
-      } catch {
-        /* transient */
-      }
-    }
-    void tick()
-    this.pollTimer = window.setInterval(() => void tick(), 900)
+    if (!this.connected) return
+    this.pollTimer = setTimeout(() => {
+      void this.tick().finally(() => {
+        if (this.connected) this.schedulePoll(this.pollMs)
+      })
+    }, delay)
   }
 
   private stopPoll() {
     if (this.pollTimer != null) {
-      window.clearInterval(this.pollTimer)
+      clearTimeout(this.pollTimer)
       this.pollTimer = null
+    }
+  }
+
+  private async tick() {
+    if (!this.connected) return
+    if (this.ticking) {
+      this.pendingTick = true
+      return
+    }
+    this.ticking = true
+    try {
+      const data = await this.api<{
+        room: RoomInfo | null
+        events: Array<Record<string, unknown> & { id: number; type?: string }>
+        bothJoined: boolean
+        bothReady: boolean
+      }>(`/api/rooms/poll?after=${this.afterId}`)
+
+      if (data.room) {
+        if (data.room.players.length !== this.lastPlayerCount) {
+          this.lastPlayerCount = data.room.players.length
+          this.emit({ type: 'room', room: data.room })
+          if (data.bothJoined && data.room.players.length >= 2) {
+            this.emit({ type: 'both-joined', room: data.room })
+          }
+        }
+      }
+
+      for (const ev of data.events) {
+        if (typeof ev.id === 'number' && ev.id > this.afterId) this.afterId = ev.id
+        const type = String(ev.type || '')
+        if (type === 'both-joined' && data.room) {
+          this.emit({ type: 'both-joined', room: data.room })
+        } else if (type === 'start-battle' && data.room) {
+          this.emit({ type: 'start-battle', room: data.room })
+        } else if (type === 'ready' && data.room) {
+          this.emit({
+            type: 'ready',
+            userId: String(ev.userId || ''),
+            room: data.room,
+          })
+        } else if (type === 'peer-left') {
+          this.emit({ type: 'peer-left', userId: String(ev.userId || '') })
+        } else if (type === 'shot') {
+          const coord = ev.coord as Coord
+          const player = ev.player as PlayerId
+          if (
+            coord &&
+            typeof coord.r === 'number' &&
+            typeof coord.c === 'number' &&
+            (player === 'p1' || player === 'p2')
+          ) {
+            this.emit({ type: 'shot', player, coord, from: String(ev.from || '') })
+          }
+        } else if (type === 'placement') {
+          this.emit({
+            type: 'placement',
+            player: ev.player as PlayerId,
+            data: ev.data as SerializablePlayer,
+            from: String(ev.from || ''),
+          })
+        } else if (type === 'radar') {
+          this.emit({
+            type: 'radar',
+            player: ev.player as PlayerId,
+            from: String(ev.from || ''),
+          })
+        } else if (type === 'rematch') {
+          this.emit({ type: 'rematch', from: String(ev.from || '') })
+        } else if (type) {
+          this.emit(ev as unknown as ServerMessage)
+        }
+      }
+
+      if (data.bothReady && data.room) {
+        // start-battle usually arrives as event
+      }
+    } catch {
+      /* transient network / cold start */
+    } finally {
+      this.ticking = false
+      if (this.pendingTick && this.connected) {
+        this.pendingTick = false
+        void this.tick()
+      }
     }
   }
 
@@ -176,11 +224,12 @@ export class GameSocket {
         this.emit({ type: 'left' })
         return
       }
-      // game events
       await this.api('/api/rooms/event', {
         method: 'POST',
         body: JSON.stringify(msg),
       })
+      // pull immediately so both peers stay in sync without waiting for interval
+      void this.tick()
     } catch (e) {
       this.emit({ type: 'error', error: (e as Error).message })
     }
