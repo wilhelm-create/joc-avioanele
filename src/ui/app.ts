@@ -284,6 +284,8 @@ function handleServer(msg: ServerMessage) {
       paint()
       break
     case 'start-battle':
+      // Idempotent: bothReady poll + own ready response may fire twice
+      if (uiPhase === 'battle' && engine.phase === 'battle') break
       engine.phase = 'battle'
       engine.currentPlayer = 'p1'
       engine.turn = 1
@@ -292,13 +294,21 @@ function handleServer(msg: ServerMessage) {
           ? t('battleStartYou')
           : t('battleStartWait', { name: engine.p1.name })
       uiPhase = 'battle'
+      statusNote = ''
       socket.setFastPoll(true)
       paint()
       break
     case 'placement':
       if (msg.player !== myOnlineRole) {
         engine.applyRemotePlacement(msg.player, msg.data)
-        if (myOnlineRole) engine.markOnlineReady(myOnlineRole)
+        // Only try local battle start if we already confirmed our fleet
+        if (
+          myOnlineRole &&
+          engine.player(myOnlineRole).planes.length >= PLANES_PER_PLAYER &&
+          (uiPhase === 'waiting-opponent' || engine.phase !== 'placement')
+        ) {
+          engine.markOnlineReady(myOnlineRole)
+        }
       }
       break
     case 'shot':
@@ -901,6 +911,12 @@ function waitingOpponentScreen(): HTMLElement {
 }
 
 function finishPlacementAndNotify(placeFor: PlayerId) {
+  engine.placingPlayer = placeFor
+  if (!engine.confirmPlacement()) {
+    buzz(30)
+    paint()
+    return
+  }
   socket.send({
     type: 'placement',
     player: placeFor,
@@ -918,11 +934,18 @@ function finishPlacementAndNotify(placeFor: PlayerId) {
 function placementScreen(): HTMLElement {
   const placeFor = myOnlineRole ?? engine.placingPlayer
   const p = engine.player(placeFor)
-  const canPlace = p.planes.length < PLANES_PER_PLAYER
+  const fleetFull = p.planes.length >= PLANES_PER_PLAYER
+  const canPlaceMore = p.planes.length < PLANES_PER_PLAYER
   // Default ghost on grid center so rotation is always visible (mobile + desktop)
   const defaultGhost: Coord = { r: Math.floor(GRID / 2), c: Math.floor(GRID / 2) }
-  let stickyGhost: Coord | null = engine.ghostHead ?? (canPlace ? defaultGhost : null)
+  let stickyGhost: Coord | null =
+    engine.ghostHead ?? (canPlaceMore || engine.ghostHead ? engine.ghostHead ?? defaultGhost : defaultGhost)
+  if (!stickyGhost) stickyGhost = defaultGhost
   let boardApi: BoardApi | null = null
+
+  const bannerText = fleetFull
+    ? engine.message || t('placeReadyBanner')
+    : engine.message || t('placeBanner')
 
   const screen = el('div', { className: 'screen', 'data-screen': 'placement' }, [
     el('div', { className: 'player-pill' }, [
@@ -930,14 +953,15 @@ function placementScreen(): HTMLElement {
       el('span', { text: `${p.name} — ${t('yourFleet')} ${p.planes.length}/${PLANES_PER_PLAYER}` }),
     ]),
     el('div', {
-      className: 'banner',
-      text: engine.message || t('placeBanner'),
+      className: fleetFull ? 'banner hit' : 'banner',
+      text: bannerText,
     }),
   ])
 
   const syncOrientUi = (deg: number) => {
     for (const btn of orientBtns) {
       btn.classList.toggle('active', btn.getAttribute('data-orient') === String(deg))
+      btn.setAttribute('aria-pressed', btn.getAttribute('data-orient') === String(deg) ? 'true' : 'false')
     }
     rotateLabel.textContent = t('rotate', { deg })
     const head = stickyGhost ?? engine.ghostHead ?? defaultGhost
@@ -983,7 +1007,7 @@ function placementScreen(): HTMLElement {
   boardApi = boardElement({
     mode: 'own',
     playerId: placeFor,
-    interactive: canPlace,
+    interactive: true, // always: place OR pick up to move
     showFleet: true,
     ghost: true,
     stickyGhost: true,
@@ -991,18 +1015,28 @@ function placementScreen(): HTMLElement {
       if (c) stickyGhost = c
     },
     onCell: (coord) => {
-      if (!canPlace) return
       engine.placingPlayer = placeFor
+      const fleetCell = engine.player(placeFor).fleet.get(`${coord.r},${coord.c}`)
+      // Tap a placed plane → pick up and move
+      if (fleetCell) {
+        if (engine.pickUpPlaneAt(coord)) {
+          buzz(10)
+          stickyGhost = engine.ghostHead ?? coord
+          paint() // refresh count + free ghost
+        }
+        return
+      }
+      // Place if we still have free slots
+      if (engine.player(placeFor).planes.length >= PLANES_PER_PLAYER) {
+        buzz(20)
+        return
+      }
       engine.setGhost(coord)
       stickyGhost = coord
       if (engine.placePlane(coord)) {
         sfxPlace()
         stickyGhost = defaultGhost
-        if (engine.player(placeFor).planes.length >= PLANES_PER_PLAYER) {
-          finishPlacementAndNotify(placeFor)
-        } else {
-          paint() // place another plane
-        }
+        paint() // stay on placement — user confirms with Done
       } else {
         buzz(30)
         screenShake(document.getElementById('app'))
@@ -1026,6 +1060,22 @@ function placementScreen(): HTMLElement {
     },
   }) as HTMLButtonElement
 
+  const doneBtn = el('button', {
+    className: 'btn btn-primary btn-block',
+    type: 'button',
+    'data-action': 'confirm-fleet',
+    text: t('doneFleet'),
+    disabled: !fleetFull,
+    onClick: () => {
+      if (engine.player(placeFor).planes.length < PLANES_PER_PLAYER) {
+        buzz(30)
+        return
+      }
+      sfxPlace()
+      finishPlacementAndNotify(placeFor)
+    },
+  }) as HTMLButtonElement
+
   screen.appendChild(
     el('div', { className: 'toolbar' }, [
       rotateLabel,
@@ -1037,7 +1087,7 @@ function placementScreen(): HTMLElement {
           engine.placingPlayer = placeFor
           if (engine.autoPlaceRemaining()) {
             sfxPlace()
-            finishPlacementAndNotify(placeFor)
+            paint() // stay here — rearrange or press Done
           }
         },
       }),
@@ -1054,6 +1104,7 @@ function placementScreen(): HTMLElement {
       }),
     ]),
   )
+  screen.appendChild(doneBtn)
   screen.appendChild(
     el('p', {
       className: 'hint',
@@ -1061,8 +1112,8 @@ function placementScreen(): HTMLElement {
     }),
   )
 
-  // Show ghost immediately so rotate/orient pad is meaningful before first tap
-  if (canPlace && stickyGhost) {
+  // Show ghost when we can still place (or after pick-up)
+  if (engine.player(placeFor).planes.length < PLANES_PER_PLAYER && stickyGhost) {
     queueMicrotask(() => boardApi?.paintGhost(stickyGhost))
   }
 

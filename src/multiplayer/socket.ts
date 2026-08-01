@@ -51,6 +51,8 @@ export class GameSocket {
   private ticking = false
   /** If a tick was requested while one was in flight, run again after */
   private pendingTick = false
+  /** Avoid re-emitting start-battle every poll once both are ready */
+  private battleStartedEmitted = false
   /** Faster while in battle / waiting for shots */
   pollMs = 400
 
@@ -75,8 +77,15 @@ export class GameSocket {
     this.connected = true
     this.afterId = 0
     this.lastPlayerCount = 0
+    this.battleStartedEmitted = false
     this.schedulePoll(0)
     this.emit({ type: 'welcome', user: { id: '', username: '' } })
+  }
+
+  private emitStartBattle(room: RoomInfo) {
+    if (this.battleStartedEmitted) return
+    this.battleStartedEmitted = true
+    this.emit({ type: 'start-battle', room })
   }
 
   setFastPoll(fast: boolean) {
@@ -131,13 +140,17 @@ export class GameSocket {
         if (type === 'both-joined' && data.room) {
           this.emit({ type: 'both-joined', room: data.room })
         } else if (type === 'start-battle' && data.room) {
-          this.emit({ type: 'start-battle', room: data.room })
+          this.emitStartBattle(data.room)
         } else if (type === 'ready' && data.room) {
           this.emit({
             type: 'ready',
             userId: String(ev.userId || ''),
             room: data.room,
           })
+          // If room already shows both ready (race / missed start-battle event)
+          if (data.room.players.filter((p) => p.ready).length >= 2) {
+            this.emitStartBattle(data.room)
+          }
         } else if (type === 'peer-left') {
           this.emit({ type: 'peer-left', userId: String(ev.userId || '') })
         } else if (type === 'shot') {
@@ -171,8 +184,9 @@ export class GameSocket {
         }
       }
 
+      // Critical: bothReady even if start-battle event was filtered (own from) or lost to race
       if (data.bothReady && data.room) {
-        // start-battle usually arrives as event
+        this.emitStartBattle(data.room)
       }
     } catch {
       /* transient network / cold start */
@@ -203,6 +217,7 @@ export class GameSocket {
         })
         this.afterId = 0
         this.lastPlayerCount = data.room.players.length
+        this.battleStartedEmitted = false
         this.emit({ type: 'room', room: data.room, role: data.role })
         return
       }
@@ -213,6 +228,7 @@ export class GameSocket {
         })
         this.afterId = 0
         this.lastPlayerCount = data.room.players.length
+        this.battleStartedEmitted = false
         this.emit({ type: 'room', room: data.room, role: data.role })
         if (data.room.players.length >= 2) {
           this.emit({ type: 'both-joined', room: data.room })
@@ -221,7 +237,21 @@ export class GameSocket {
       }
       if (msg.type === 'leave-room') {
         await this.api('/api/rooms/leave', { method: 'POST', body: '{}' })
+        this.battleStartedEmitted = false
         this.emit({ type: 'left' })
+        return
+      }
+      // Ready: use response bothReady — sender never receives own start-battle via poll filter
+      if (msg.type === 'ready') {
+        const data = await this.api<{ ok: boolean; room: RoomInfo; bothReady: boolean }>(
+          '/api/rooms/event',
+          { method: 'POST', body: JSON.stringify(msg) },
+        )
+        if (data.room) {
+          this.emit({ type: 'ready', userId: '', room: data.room })
+          if (data.bothReady) this.emitStartBattle(data.room)
+        }
+        void this.tick()
         return
       }
       await this.api('/api/rooms/event', {
@@ -239,5 +269,6 @@ export class GameSocket {
     this.connected = false
     this.stopPoll()
     this.lastPlayerCount = 0
+    this.battleStartedEmitted = false
   }
 }

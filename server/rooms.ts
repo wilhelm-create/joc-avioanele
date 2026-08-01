@@ -365,25 +365,90 @@ export async function leaveAll(userId: string): Promise<void> {
   await detachUser(userId)
 }
 
+/**
+ * Mark player ready. Retries + merges ready set to survive concurrent Blob writes
+ * (both players finishing placement at the same time).
+ */
 export async function markReady(code: string, userId: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const room = await loadRoom(code)
+    if (!room || !room.players.has(userId)) return false
+    const prior = new Set(room.ready)
+    room.ready.add(userId)
+    await saveRoom(room)
+
+    const again = await loadRoom(code)
+    if (!again) return false
+    let missing = false
+    for (const id of prior) {
+      if (!again.ready.has(id)) {
+        again.ready.add(id)
+        missing = true
+      }
+    }
+    if (!again.ready.has(userId)) {
+      again.ready.add(userId)
+      missing = true
+    }
+    if (missing) {
+      await saveRoom(again)
+      continue
+    }
+    return again.ready.size >= 2
+  }
   const room = await loadRoom(code)
-  if (!room || !room.players.has(userId)) return false
-  room.ready.add(userId)
-  await saveRoom(room)
-  return room.ready.size >= 2
+  return Boolean(room && room.ready.size >= 2)
 }
 
+/**
+ * Append event with merge-retry so concurrent placement/ready/shot writes
+ * do not clobber each other on Blob last-write-wins.
+ */
 export async function pushEvent(
   code: string,
   from: string,
   fromName: string,
   payload: Record<string, unknown>,
 ): Promise<Room | undefined> {
-  const room = await loadRoom(code)
-  if (!room) return undefined
-  pushEventSync(room, from, fromName, payload)
-  await saveRoom(room)
-  return room
+  let lastEvId = -1
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const room = await loadRoom(code)
+    if (!room) return undefined
+
+    // Keep ready set from disk (may have been updated by concurrent markReady)
+    const readySnap = new Set(room.ready)
+    const playersSnap = new Map(room.players)
+
+    const maxExisting = room.events.reduce((m, e) => Math.max(m, e.id), 0)
+    room.nextEventId = Math.max(room.nextEventId, maxExisting + 1)
+    const ev = pushEventSync(room, from, fromName, payload)
+    lastEvId = ev.id
+    await saveRoom(room)
+
+    const again = await loadRoom(code)
+    if (!again) return undefined
+
+    // merge ready + players
+    for (const id of readySnap) again.ready.add(id)
+    for (const [uid, pl] of playersSnap) {
+      if (!again.players.has(uid)) again.players.set(uid, pl)
+    }
+    // merge events by id
+    const byId = new Map<number, RoomEvent>()
+    for (const e of again.events) byId.set(e.id, e)
+    for (const e of room.events) byId.set(e.id, e)
+    again.events = [...byId.values()].sort((a, b) => a.id - b.id).slice(-200)
+    again.nextEventId = Math.max(
+      again.nextEventId,
+      room.nextEventId,
+      again.events.reduce((m, e) => Math.max(m, e.id + 1), 1),
+    )
+
+    await saveRoom(again)
+
+    if (again.events.some((e) => e.id === lastEvId)) return again
+  }
+  return loadRoom(code) ?? undefined
 }
 
 export function pollEvents(room: Room, afterId: number): RoomEvent[] {

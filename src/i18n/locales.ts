@@ -104,10 +104,14 @@ export const locales: Record<Lang, Dict> = {
     yourFleet: 'flota ta',
     placeBanner:
       'Plasează cele 3 avioane pe grila TA. Prietenul face la fel pe device-ul lui.',
+    placeReadyBanner:
+      'Flota e completă. Apasă un avion ca să-l muți, sau Gata când ești mulțumit.',
     rotate: '🔄 Rotește ({deg}°)',
     auto: '✨ Auto',
     clear: 'Șterge',
-    cabinHint: 'Cabina (◆) e punctul vulnerabil. Nu predai telefonul — fiecare pe device-ul lui.',
+    doneFleet: '✓ Gata — flota mea e gata',
+    cabinHint:
+      'Cabina (◆) e vulnerabilă. Apasă un avion plasat ca să-l muți. Apasă Gata doar când ești mulțumit.',
 
     yourTurn: 'Tura ta',
     turnOf: 'Tura: {name}',
@@ -137,6 +141,9 @@ export const locales: Record<Lang, Dict> = {
     // engine-facing / dynamic
     enginePlacing: '{name}, plasează cele 3 avioane',
     enginePlanePlaced: 'Avion {n}/{total} plasat. Mai ai {left}.',
+    engineAllPlaced: '3 avioane plasate. Poți muta sau apasă Gata.',
+    enginePlanePickedUp: 'Avion ridicat ({n}/{total}). Plasează-l din nou.',
+    engineNeedAllPlanes: 'Plasează toate cele {n} avioane înainte de Gata.',
     engineGridCleared: 'Grila ștearsă — plasează din nou',
     engineNoSpace: 'Nu am găsit loc liber — încearcă din nou sau roteste manual',
     engineFleetReady: 'Flota e gata. Așteaptă adversarul…',
@@ -258,10 +265,13 @@ export const locales: Record<Lang, Dict> = {
 
     yourFleet: 'your fleet',
     placeBanner: 'Place your 3 planes on YOUR grid. Your friend does the same on their device.',
+    placeReadyBanner: 'Fleet complete. Tap a plane to move it, or Done when you are happy.',
     rotate: '🔄 Rotate ({deg}°)',
     auto: '✨ Auto',
     clear: 'Clear',
-    cabinHint: 'The cockpit (◆) is vulnerable. No device handoff — each on their own device.',
+    doneFleet: '✓ Done — my fleet is ready',
+    cabinHint:
+      'The cockpit (◆) is vulnerable. Tap a placed plane to move it. Press Done only when you are ready.',
 
     yourTurn: 'Your turn',
     turnOf: 'Turn: {name}',
@@ -290,6 +300,9 @@ export const locales: Record<Lang, Dict> = {
 
     enginePlacing: '{name}, place your 3 planes',
     enginePlanePlaced: 'Plane {n}/{total} placed. {left} left.',
+    engineAllPlaced: '3 planes placed. Rearrange or press Done.',
+    enginePlanePickedUp: 'Plane picked up ({n}/{total}). Place it again.',
+    engineNeedAllPlanes: 'Place all {n} planes before Done.',
     engineGridCleared: 'Grid cleared — place again',
     engineNoSpace: 'No free space found — try again or rotate manually',
     engineFleetReady: 'Fleet ready. Waiting for opponent…',

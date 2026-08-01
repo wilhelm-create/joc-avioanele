@@ -1288,6 +1288,18 @@ html[data-theme='dark'] .room-code {
   justify-content: center;
 }
 
+button.btn-block[data-action='confirm-fleet'] {
+  margin-top: 4px;
+  min-height: 52px;
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+button.btn-block[data-action='confirm-fleet']:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* ——— Placement orientation pad (mobile-first, large targets) ——— */
 .orient-pad {
   display: grid;

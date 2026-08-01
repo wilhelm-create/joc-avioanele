@@ -212,17 +212,72 @@ export class GameEngine {
       p.fleet.set(key(cell.r, cell.c), { planeId: id, isHead })
     }
 
+    // Never auto-advance — player may still rearrange; UI "Done" confirms
     if (p.planes.length >= PLANES_PER_PLAYER) {
-      this.onPlacementComplete(silent)
+      this.message = t('engineAllPlaced')
     } else {
-      this.message = t('enginePlanePlaced', { n: p.planes.length, total: PLANES_PER_PLAYER, left: PLANES_PER_PLAYER - p.planes.length })
+      this.message = t('enginePlanePlaced', {
+        n: p.planes.length,
+        total: PLANES_PER_PLAYER,
+        left: PLANES_PER_PLAYER - p.planes.length,
+      })
     }
     this.ghostHead = null
     if (!silent) this.emit()
     return true
   }
 
-  /** Cookie helper: auto-place remaining planes (single UI notify at end). */
+  /**
+   * Pick up a placed plane (tap to move). Removes it and restores ghost + orientation
+   * so the player can place it again elsewhere.
+   */
+  pickUpPlaneAt(coord: Coord, silent = false): boolean {
+    if (this.phase !== 'placement') return false
+    const p = this.player(this.placingPlayer)
+    const cell = p.fleet.get(key(coord.r, coord.c))
+    if (!cell) return false
+    const plane = p.planes[cell.planeId]
+    if (!plane) return false
+
+    this.placeOrientation = plane.orientation
+    const head = { ...plane.head }
+
+    for (const c of plane.cells) {
+      p.fleet.delete(key(c.r, c.c))
+    }
+    p.planes.splice(cell.planeId, 1)
+    // reindex plane ids so fleet map stays consistent
+    p.planes.forEach((pl, i) => {
+      pl.id = i
+      for (const c of pl.cells) {
+        const isHead = c.r === pl.head.r && c.c === pl.head.c
+        p.fleet.set(key(c.r, c.c), { planeId: i, isHead })
+      }
+    })
+
+    this.ghostHead = head
+    this.message = t('enginePlanePickedUp', {
+      n: p.planes.length,
+      total: PLANES_PER_PLAYER,
+    })
+    if (!silent) this.emit()
+    return true
+  }
+
+  /** Explicit confirm — only then leave placement / wait for opponent. */
+  confirmPlacement(silent = false): boolean {
+    if (this.phase !== 'placement') return false
+    const p = this.player(this.placingPlayer)
+    if (p.planes.length < PLANES_PER_PLAYER) {
+      this.message = t('engineNeedAllPlanes', { n: PLANES_PER_PLAYER })
+      if (!silent) this.emit()
+      return false
+    }
+    this.onPlacementComplete(silent)
+    return true
+  }
+
+  /** Cookie helper: auto-place remaining planes (does not confirm — user presses Done). */
   autoPlaceRemaining(): boolean {
     if (this.phase !== 'placement') return false
     const p = this.player(this.placingPlayer)
@@ -240,6 +295,7 @@ export class GameEngine {
         return false
       }
     }
+    this.message = t('engineAllPlaced')
     this.emit()
     return true
   }
