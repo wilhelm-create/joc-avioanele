@@ -41,7 +41,7 @@ export const locales: Record<Lang, Dict> = {
     preparingRoom: 'Se pregătește camera de joc…',
     connectingRoom: 'Te conectezi la camera {code}…',
     lobbyInviteTitle: 'Invită & așteaptă',
-    lobbyJoinTitle: 'Intră în cameră',
+    lobbyJoinTitle: 'Intră în joc',
     lobbyHostHint:
       'Camera e gata. Prietenul joacă de pe telefonul/tableta/PC-ul lui — nu îi dai device-ul tău.',
     lobbyGuestHint: 'Ești în cameră. Așteaptă gazda și pregătirea partidei…',
@@ -77,7 +77,7 @@ export const locales: Record<Lang, Dict> = {
       'Din SMS sau mesaj: deschide linkul, sau introdu codul camerei aici. Joci de pe device-ul tău.',
     roomCode: 'Cod cameră',
     roomCodePlaceholder: 'ex: K7M2P',
-    enterRoom: 'Intră în cameră',
+    enterRoom: 'Intră în joc',
     invalidCode: 'Cod invalid',
     lobbyLoading: 'Se încarcă lobby-ul…',
 
@@ -194,7 +194,7 @@ export const locales: Record<Lang, Dict> = {
     preparingRoom: 'Preparing the game room…',
     connectingRoom: 'Joining room {code}…',
     lobbyInviteTitle: 'Invite & wait',
-    lobbyJoinTitle: 'Join room',
+    lobbyJoinTitle: 'Join game',
     lobbyHostHint:
       'Room is ready. Your friend plays on their phone/tablet/PC — you do not hand over your device.',
     lobbyGuestHint: 'You are in the room. Wait for the host and match setup…',
@@ -229,7 +229,7 @@ export const locales: Record<Lang, Dict> = {
       'From SMS or chat: open the link, or enter the room code here. You play on your own device.',
     roomCode: 'Room code',
     roomCodePlaceholder: 'e.g. K7M2P',
-    enterRoom: 'Enter room',
+    enterRoom: 'Join game',
     invalidCode: 'Invalid code',
     lobbyLoading: 'Loading lobby…',
 
