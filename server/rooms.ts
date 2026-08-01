@@ -621,7 +621,7 @@ export async function updateRoomSettings(
     const again = await loadRoom(code)
     if (again && again.settings.gridSize === next.gridSize) return again
   }
-  return loadRoom(code) ?? undefined
+  return (await loadRoom(code)) ?? undefined
 }
 
 export async function heartbeat(_userId: string): Promise<void> {
