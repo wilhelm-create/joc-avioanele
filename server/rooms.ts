@@ -448,7 +448,7 @@ export async function pushEvent(
 
     if (again.events.some((e) => e.id === lastEvId)) return again
   }
-  return loadRoom(code) ?? undefined
+  return (await loadRoom(code)) ?? undefined
 }
 
 export function pollEvents(room: Room, afterId: number): RoomEvent[] {
