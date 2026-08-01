@@ -20,16 +20,18 @@ import {
   login,
   register,
   reportMatch,
-  sendInviteSms,
 } from '../api/client'
 import { clearSession, getStoredUser, getToken } from '../auth/session'
 import type { PublicUser } from '../auth/types'
 import {
-  buildInviteSmsBody,
+  buildInviteText,
   buildInviteUrl,
   clearInviteFromUrl,
   getInviteCodeFromLocation,
-  openNativeSms,
+  openShareEmail,
+  openShareSms,
+  openShareWhatsApp,
+  openSystemShare,
 } from '../invite/url'
 import { getLang, onLangChange, setLang, t } from '../i18n'
 import { getTheme, onThemeChange, setTheme } from '../theme'
@@ -65,8 +67,6 @@ let matchReported = false
 let rootEl: HTMLElement | null = null
 /** Pending invite from deep link — join after login */
 let pendingInviteCode: string | null = null
-let invitePhoneDraft = ''
-let inviteSmsNote = ''
 let copyLinkNote = ''
 
 function paint() {
@@ -621,7 +621,6 @@ function statCard(n: string, l: string) {
 }
 
 async function startOnlineHost() {
-  inviteSmsNote = ''
   copyLinkNote = ''
   statusNote = t('preparingRoom')
   uiPhase = 'online-lobby'
@@ -658,6 +657,7 @@ function onlineLobbyScreen(): HTMLElement {
     )
 
     if (isHostLobby) {
+      const inviteText = buildInviteText(roomCode, currentUser!.username)
       const linkInput = el('input', {
         type: 'text',
         id: 'invite-link',
@@ -668,107 +668,77 @@ function onlineLobbyScreen(): HTMLElement {
       linkInput.value = link
       linkInput.readOnly = true
 
-      const phoneInput = el('input', {
-        type: 'tel',
-        id: 'invite-phone',
-        inputmode: 'tel',
-        placeholder: t('phonePlaceholder'),
-        'aria-label': t('phoneNumber'),
-        autocomplete: 'tel',
-      }) as HTMLInputElement
-      phoneInput.value = invitePhoneDraft
-      phoneInput.addEventListener('input', () => {
-        invitePhoneDraft = phoneInput.value
-      })
-
       card.append(
         el('div', { className: 'field' }, [
           el('label', { for: 'invite-link', text: t('inviteLinkLabel') }),
           linkInput,
         ]),
-        el('div', { className: 'btn-row' }, [
-          el('button', {
-            className: 'btn btn-accent',
-            type: 'button',
-            'data-action': 'copy-link',
-            text: t('copyLink'),
-            onClick: async () => {
-              try {
-                await navigator.clipboard.writeText(link)
-                copyLinkNote = t('linkCopied')
-              } catch {
-                linkInput.select()
-                copyLinkNote = t('copyManual')
-              }
-              paint()
-            },
-          }),
-          el('button', {
-            className: 'btn btn-sky',
-            type: 'button',
-            'data-action': 'share-link',
-            text: t('share'),
-            onClick: async () => {
-              const text = buildInviteSmsBody(roomCode, currentUser!.username)
-              if (navigator.share) {
-                try {
-                  await navigator.share({ title: t('shareTitle'), text, url: link })
-                } catch {
-                  /* cancelled */
-                }
-              } else {
-                try {
-                  await navigator.clipboard.writeText(text)
-                  copyLinkNote = t('inviteTextCopied')
-                  paint()
-                } catch {
-                  /* ignore */
-                }
-              }
-            },
-          }),
-        ]),
-        el('hr', { className: 'soft-hr' }),
-        el('h3', { className: 'subhead', text: t('inviteSmsTitle') }),
-        el('p', {
-          className: 'hint',
-          text: t('inviteSmsHint'),
-        }),
-        el('div', { className: 'field' }, [
-          el('label', { for: 'invite-phone', text: t('phoneNumber') }),
-          phoneInput,
-        ]),
         el('button', {
-          className: 'btn btn-primary btn-block',
+          className: 'btn btn-accent btn-block',
           type: 'button',
-          'data-action': 'send-sms',
-          text: t('sendSms'),
+          'data-action': 'copy-link',
+          text: t('copyLink'),
           onClick: async () => {
-            invitePhoneDraft = phoneInput.value
-            inviteSmsNote = ''
-            const body = buildInviteSmsBody(roomCode, currentUser!.username)
             try {
-              const res = await sendInviteSms(invitePhoneDraft, roomCode, link)
-              if (res.mode === 'twilio') {
-                inviteSmsNote = t('smsTwilioSent')
-              } else {
-                openNativeSms(res.phone || invitePhoneDraft, res.body || body)
-                inviteSmsNote = t('smsAppOpened')
-              }
+              await navigator.clipboard.writeText(link)
+              copyLinkNote = t('linkCopied')
             } catch {
-              try {
-                openNativeSms(invitePhoneDraft, body)
-                inviteSmsNote = t('smsAppOpened')
-              } catch (e2) {
-                inviteSmsNote = (e2 as Error).message
-              }
+              linkInput.select()
+              copyLinkNote = t('copyManual')
             }
             paint()
           },
         }),
+        el('hr', { className: 'soft-hr' }),
+        el('h3', { className: 'subhead', text: t('inviteShareTitle') }),
+        el('p', {
+          className: 'hint',
+          text: t('inviteShareHint'),
+        }),
+        el('div', { className: 'btn-row share-row' }, [
+          el('button', {
+            className: 'btn btn-primary',
+            type: 'button',
+            'data-action': 'share-whatsapp',
+            text: t('shareWhatsApp'),
+            onClick: () => openShareWhatsApp(inviteText),
+          }),
+          el('button', {
+            className: 'btn btn-sky',
+            type: 'button',
+            'data-action': 'share-email',
+            text: t('shareEmail'),
+            onClick: () => openShareEmail(t('shareTitle'), inviteText),
+          }),
+          el('button', {
+            className: 'btn btn-accent',
+            type: 'button',
+            'data-action': 'share-sms',
+            text: t('shareSms'),
+            onClick: () => openShareSms(inviteText),
+          }),
+        ]),
+        el('button', {
+          className: 'btn btn-ghost btn-block',
+          type: 'button',
+          'data-action': 'share-system',
+          style: 'margin-top:8px',
+          text: t('share'),
+          onClick: async () => {
+            try {
+              const shared = await openSystemShare(t('shareTitle'), inviteText, link)
+              if (!shared) {
+                await navigator.clipboard.writeText(inviteText)
+                copyLinkNote = t('inviteTextCopied')
+                paint()
+              }
+            } catch {
+              /* cancelled */
+            }
+          },
+        }),
       )
       if (copyLinkNote) card.appendChild(el('div', { className: 'banner', text: copyLinkNote }))
-      if (inviteSmsNote) card.appendChild(el('div', { className: 'banner radar', text: inviteSmsNote }))
     }
 
     card.append(
@@ -834,7 +804,6 @@ function onlineLobbyScreen(): HTMLElement {
         socket.close()
         roomInfo = null
         roomCode = ''
-        inviteSmsNote = ''
         copyLinkNote = ''
         uiPhase = 'home'
         paint()

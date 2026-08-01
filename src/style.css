@@ -646,6 +646,13 @@ h3 {
   min-width: 120px;
 }
 
+.share-row .btn {
+  min-width: 0;
+  flex: 1 1 30%;
+  font-size: 0.92rem;
+  padding: 12px 10px;
+}
+
 @media (max-width: 767px) {
   .btn-primary,
   .btn-accent,

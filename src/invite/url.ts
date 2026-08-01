@@ -1,4 +1,4 @@
-/** Invite deep-link helpers */
+/** Invite deep-link + share helpers (WhatsApp / email / SMS — no phone field). */
 
 import { t } from '../i18n'
 
@@ -16,24 +16,43 @@ export function getInviteCodeFromLocation(): string | null {
 }
 
 export function buildInviteUrl(roomCode: string): string {
-  // query form works on any static host without extra SPA routes
   const root = `${window.location.origin}/`
   return `${root}?room=${encodeURIComponent(roomCode.toUpperCase())}`
 }
 
-export function buildInviteSmsBody(roomCode: string, hostName: string): string {
+export function buildInviteText(roomCode: string, hostName: string): string {
   const link = buildInviteUrl(roomCode)
   return t('smsBody', { host: hostName, link })
 }
 
-/** Opens the native SMS composer (works even if the friend is offline now). */
-export function openNativeSms(phone: string, body: string) {
-  const digits = phone.replace(/[^\d+]/g, '')
-  if (!digits) throw new Error(t('invalidPhone'))
+/** @deprecated use buildInviteText */
+export function buildInviteSmsBody(roomCode: string, hostName: string): string {
+  return buildInviteText(roomCode, hostName)
+}
+
+/** SMS composer without a pre-filled number — user picks the contact. */
+export function openShareSms(body: string) {
   const encoded = encodeURIComponent(body)
-  // iOS prefers &body= after ?; Android accepts ?body=
-  const href = `sms:${digits}?body=${encoded}`
+  // Empty recipient: works on iOS/Android for picking a contact
+  window.location.href = `sms:?&body=${encoded}`
+}
+
+export function openShareWhatsApp(body: string) {
+  const encoded = encodeURIComponent(body)
+  window.open(`https://wa.me/?text=${encoded}`, '_blank', 'noopener,noreferrer')
+}
+
+export function openShareEmail(subject: string, body: string) {
+  const href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
   window.location.href = href
+}
+
+export async function openSystemShare(title: string, text: string, url: string) {
+  if (navigator.share) {
+    await navigator.share({ title, text, url })
+    return true
+  }
+  return false
 }
 
 export function clearInviteFromUrl() {

@@ -67,13 +67,16 @@ test.describe('Avioane i18n + remote', () => {
     await expect(page.getByRole('button', { name: /cod \/ link/i })).toBeVisible()
   })
 
-  test('host lobby SMS + link (RO)', async ({ page }) => {
+  test('host lobby share WhatsApp email SMS + link (RO)', async ({ page }) => {
     await registerFresh(page, 'ro')
     await page.getByRole('button', { name: /Invită un prieten/i }).click()
     await expect(page.locator('[data-screen="online-lobby"]')).toBeVisible({ timeout: 10000 })
     await expect(page.locator('.room-code')).toBeVisible({ timeout: 15000 })
     await expect(page.locator('#invite-link')).toBeVisible()
-    await expect(page.getByRole('button', { name: /Trimite SMS/i })).toBeVisible()
+    await expect(page.locator('#invite-phone')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /WhatsApp/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Email$/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^SMS$/i })).toBeVisible()
   })
 
   test('deep link join after auth', async ({ page, request }) => {
