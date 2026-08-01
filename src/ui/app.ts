@@ -32,6 +32,8 @@ import {
   openNativeSms,
 } from '../invite/url'
 import { getLang, onLangChange, setLang, t } from '../i18n'
+import { getTheme, onThemeChange, setTheme } from '../theme'
+import type { Theme } from '../theme'
 
 type UiPhase =
   | 'boot'
@@ -77,11 +79,15 @@ export async function mountApp(root: HTMLElement) {
   rootEl = root
   document.body.classList.add('site-body', 'app-shell')
   onLangChange(() => paint())
+  onThemeChange(() => paint())
 
-  const stars = document.createElement('div')
-  stars.className = 'stars'
-  stars.setAttribute('aria-hidden', 'true')
-  document.body.prepend(stars)
+  // liquid ambient blob (third blob; ::before/::after are the other two)
+  if (!document.querySelector('.ambient-blob')) {
+    const blob = document.createElement('div')
+    blob.className = 'ambient-blob'
+    blob.setAttribute('aria-hidden', 'true')
+    document.body.prepend(blob)
+  }
 
   const fx = document.createElement('div')
   fx.id = 'fx-layer'
@@ -309,7 +315,12 @@ function shell(content: HTMLElement): HTMLElement {
 }
 
 function langToggle(): HTMLElement {
-  const wrap = el('div', { className: 'lang-toggle', role: 'group', 'aria-label': t('switchLang') })
+  const wrap = el('div', {
+    className: 'lang-toggle',
+    role: 'group',
+    'aria-label': t('switchLang'),
+    'data-control': 'lang',
+  })
   for (const lang of ['ro', 'en'] as const) {
     wrap.appendChild(
       el('button', {
@@ -317,8 +328,40 @@ function langToggle(): HTMLElement {
         className: `lang-btn ${getLang() === lang ? 'active' : ''}`,
         text: lang === 'ro' ? t('langRo') : t('langEn'),
         'data-lang': lang,
+        title: t('switchLang'),
         onClick: () => {
           setLang(lang)
+          paint()
+        },
+      }),
+    )
+  }
+  return wrap
+}
+
+function themeToggle(): HTMLElement {
+  const theme = getTheme()
+  const wrap = el('div', {
+    className: 'theme-toggle',
+    role: 'group',
+    'aria-label': 'Theme',
+    'data-control': 'theme',
+  })
+  const opts: { id: Theme; icon: string; label: string }[] = [
+    { id: 'light', icon: '☀', label: t('themeLight') },
+    { id: 'dark', icon: '☾', label: t('themeDark') },
+  ]
+  for (const o of opts) {
+    wrap.appendChild(
+      el('button', {
+        type: 'button',
+        className: `theme-btn ${theme === o.id ? 'active' : ''}`,
+        text: o.icon,
+        title: o.label,
+        'aria-label': o.label,
+        'data-theme-opt': o.id,
+        onClick: () => {
+          setTheme(o.id)
           paint()
         },
       }),
@@ -341,6 +384,7 @@ function siteHeader(): HTMLElement {
   }, [el('span', { className: 'brand-mark', text: '✈' }), el('span', { text: t('appName') })])
 
   const right = el('div', { className: 'header-actions' })
+  right.appendChild(themeToggle())
   right.appendChild(langToggle())
   if (currentUser) {
     right.appendChild(

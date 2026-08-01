@@ -32,13 +32,22 @@ async function registerFresh(page: import('@playwright/test').Page, lang: 'ro' |
 }
 
 test.describe('Avioane i18n + remote', () => {
-  test('auth screen + language toggle RO/EN', async ({ page }) => {
+  test('auth screen + language and theme toggles', async ({ page }) => {
     await forceLang(page, 'ro')
+    await page.addInitScript(() => localStorage.setItem('avioane_theme', 'dark'))
     await page.goto('/')
     await expect(page.locator('[data-screen="auth"]')).toBeVisible()
     await expect(page.locator('.lang-toggle')).toBeVisible()
+    await expect(page.locator('.theme-toggle')).toBeVisible()
+    await expect(page.locator('[data-control="theme"]')).toBeVisible()
     await expect(page.getByRole('button', { name: 'RO' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'EN' })).toBeVisible()
+    // switch to light
+    await page.locator('[data-theme-opt="light"]').click()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+    // switch to dark
+    await page.locator('[data-theme-opt="dark"]').click()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
     await page.getByRole('button', { name: 'EN' }).click()
     await expect(page.getByText(/Sign in|Create account/i).first()).toBeVisible()
     await page.getByRole('button', { name: 'RO' }).click()

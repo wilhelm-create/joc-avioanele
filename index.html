@@ -8,9 +8,8 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
-    <meta name="theme-color" content="#0d0a1f" media="(prefers-color-scheme: dark)" />
-    <meta name="theme-color" content="#0d0a1f" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#12122a" />
+    <meta name="color-scheme" content="dark light" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -22,17 +21,43 @@
     />
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />
     <title>Avioane</title>
+    <script>
+      // Prevent theme flash before CSS/JS
+      (function () {
+        try {
+          var t = localStorage.getItem('avioane_theme')
+          if (t !== 'light' && t !== 'dark') {
+            t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+          }
+          document.documentElement.dataset.theme = t
+          document.documentElement.style.colorScheme = t
+        } catch (e) {
+          document.documentElement.dataset.theme = 'dark'
+        }
+      })()
+    </script>
     <style>
-      /* instant native shell before CSS loads */
-      html, body {
+      html,
+      body {
         margin: 0;
-        background: #0d0a1f;
-        color: #f3f0ff;
         min-height: 100%;
         min-height: 100dvh;
         overscroll-behavior: none;
       }
-      #app { min-height: 100dvh; }
+      html[data-theme='light'],
+      html[data-theme='light'] body {
+        background: #eef0ff;
+        color: #2a2440;
+      }
+      html[data-theme='dark'],
+      html:not([data-theme]) body,
+      html[data-theme='dark'] body {
+        background: #12122a;
+        color: #f3f0ff;
+      }
+      #app {
+        min-height: 100dvh;
+      }
     </style>
   </head>
   <body class="app-shell">
