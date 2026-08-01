@@ -15,8 +15,8 @@ import { GRID, key, PLANES_PER_PLAYER, label } from './types'
 import { t } from '../i18n'
 
 const COLORS = {
-  p1: '#a78bfa', // violet (no green)
-  p2: '#fb923c', // orange
+  p1: '#e8956a', // warm coral (no purple / no green)
+  p2: '#5bb4e5', // soft sky blue
 }
 
 function emptyPlayer(id: PlayerId, name: string): PlayerState {

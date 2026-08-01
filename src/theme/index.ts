@@ -57,7 +57,7 @@ function applyTheme() {
   root.style.colorScheme = current
   const meta = document.querySelector('meta[name="theme-color"]')
   if (meta) {
-    meta.setAttribute('content', current === 'light' ? '#eef0ff' : '#12122a')
+    meta.setAttribute('content', current === 'light' ? '#f6f1ea' : '#1c2438')
   }
   const scheme = document.querySelector('meta[name="color-scheme"]')
   if (scheme) scheme.setAttribute('content', current)

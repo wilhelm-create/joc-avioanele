@@ -4,15 +4,15 @@
  */
 
 const PALETTE = [
-  '#c4b5fd', // soft violet
-  '#a78bfa', // violet
-  '#fb923c', // orange
+  '#fb923c', // coral orange
   '#fdba74', // peach
   '#fbbf24', // amber
-  '#f472b6', // pink
+  '#f0ab8a', // soft terracotta
+  '#7dd3fc', // soft sky
   '#38bdf8', // sky
-  '#e0e7ff', // white-lilac
-  '#f9a8d4', // rose
+  '#fecdd3', // soft rose
+  '#fff7ed', // warm cream
+  '#fde68a', // pale gold
 ]
 
 export function glitterBurst(x: number, y: number, intensity = 28) {
