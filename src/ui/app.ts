@@ -20,13 +20,19 @@ import {
   type ServerMessage,
 } from '../multiplayer/socket'
 import {
-  fetchLeaderboard,
+  changeEmail,
+  changePassword,
   fetchMe,
+  forgotPassword,
   login,
   register,
   reportMatch,
+  resendVerification,
+  resetPassword,
+  uploadAvatar,
+  verifyEmail,
 } from '../api/client'
-import { clearSession, getStoredUser, getToken } from '../auth/session'
+import { clearSession, getStoredUser, getToken, updateStoredUser } from '../auth/session'
 import type { PublicUser } from '../auth/types'
 import {
   buildInviteText,
@@ -51,23 +57,29 @@ type UiPhase =
   | 'waiting-opponent'
   | 'battle'
   | 'game-over'
-  | 'leaderboard'
+  | 'settings'
 
 const engine = new GameEngine()
 const socket = new GameSocket()
 
 let uiPhase: UiPhase = 'boot'
 let currentUser: PublicUser | null = null
-let authMode: 'login' | 'register' = 'login'
+let authMode: 'login' | 'register' | 'forgot' | 'reset' = 'login'
 let authError = ''
+let authNote = ''
 let authBusy = false
 let authUserDraft = ''
 let authPassDraft = ''
+let authEmailDraft = ''
+let authPass2Draft = ''
+let resetTokenFromUrl: string | null = null
+let settingsNote = ''
+let settingsError = ''
+let settingsBusy = false
 let roomCode = ''
 let roomInfo: RoomInfo | null = null
 let myOnlineRole: PlayerId | null = null
 let statusNote = ''
-let leaders: PublicUser[] = []
 let matchReported = false
 let rootEl: HTMLElement | null = null
 /** Pending invite from deep link — join after login */
@@ -252,9 +264,49 @@ export async function mountApp(root: HTMLElement) {
   window.addEventListener('pointerdown', unlock)
 
   pendingInviteCode = getInviteCodeFromLocation()
+  const urlParams = new URLSearchParams(location.search)
+  const verifyTok = urlParams.get('verify')
+  const resetTok = urlParams.get('reset')
 
   uiPhase = 'boot'
   paint()
+
+  if (verifyTok) {
+    try {
+      const res = await verifyEmail(verifyTok)
+      currentUser = res.user
+      // strip verify from URL
+      urlParams.delete('verify')
+      const q = urlParams.toString()
+      history.replaceState({}, '', `${location.pathname}${q ? `?${q}` : ''}${location.hash}`)
+      if (pendingInviteCode) await acceptPendingInvite()
+      else {
+        uiPhase = 'home'
+        try {
+          await socket.connect()
+          await refreshActiveGames()
+        } catch {
+          /* */
+        }
+        paint()
+      }
+      return
+    } catch (e) {
+      authError = (e as Error).message
+      authMode = 'login'
+      uiPhase = 'auth'
+      paint()
+      return
+    }
+  }
+
+  if (resetTok) {
+    resetTokenFromUrl = resetTok
+    authMode = 'reset'
+    uiPhase = 'auth'
+    paint()
+    return
+  }
 
   if (getToken()) {
     currentUser = (await fetchMe()) || getStoredUser()
@@ -510,6 +562,8 @@ function view(): HTMLElement {
       return shell(authScreen())
     case 'home':
       return shell(homeScreen())
+    case 'settings':
+      return shell(settingsScreen())
     case 'online-lobby':
       return shell(onlineLobbyScreen())
     case 'placement':
@@ -520,8 +574,6 @@ function view(): HTMLElement {
       return shell(battleScreen())
     case 'game-over':
       return shell(gameOverScreen())
-    case 'leaderboard':
-      return shell(leaderboardScreen())
     default:
       return shell(homeScreen())
   }
@@ -596,7 +648,7 @@ function themeToggle(): HTMLElement {
 function siteHeader(): HTMLElement {
   const header = el('header', { className: 'site-header' })
 
-  // Row 1: brand + theme/lang (always fits)
+  // Row 1: brand + theme/lang
   const top = el('div', { className: 'header-row header-row-top' })
   const brand = el(
     'button',
@@ -606,7 +658,7 @@ function siteHeader(): HTMLElement {
       onClick: () => {
         if (currentUser) {
           uiPhase = 'home'
-          paint()
+          void refreshActiveGames().then(() => paint())
         }
       },
     },
@@ -621,25 +673,20 @@ function siteHeader(): HTMLElement {
   top.append(brand, tools)
   header.appendChild(top)
 
-  // Row 2: user identity + actions (only when logged in)
+  // Row 2: settings + logout only (no chip / no leaderboard)
   if (currentUser) {
     const bottom = el('div', { className: 'header-row header-row-user' })
-    bottom.appendChild(
-      el('span', {
-        className: 'user-chip',
-        text: `${currentUser.username} · ${currentUser.wins}W`,
-        title: t('yourAccount'),
-      }),
-    )
-    const actions = el('div', { className: 'header-user-actions' })
+    const actions = el('div', { className: 'header-user-actions header-user-actions-end' })
     actions.appendChild(
       el('button', {
         className: 'btn btn-ghost btn-sm',
         type: 'button',
-        text: t('leaderboard'),
-        onClick: async () => {
-          leaders = await fetchLeaderboard().catch(() => [])
-          uiPhase = 'leaderboard'
+        text: t('settings'),
+        'data-action': 'settings',
+        onClick: () => {
+          settingsNote = ''
+          settingsError = ''
+          uiPhase = 'settings'
           paint()
         },
       }),
@@ -655,6 +702,7 @@ function siteHeader(): HTMLElement {
           clearSession()
           currentUser = null
           uiPhase = 'auth'
+          authMode = 'login'
           paint()
         },
       }),
@@ -673,59 +721,86 @@ function siteFooter(): HTMLElement {
 }
 
 function authScreen(): HTMLElement {
-  const title = authMode === 'login' ? t('authTitleLogin') : t('authTitleRegister')
+  const title =
+    authMode === 'login'
+      ? t('authTitleLogin')
+      : authMode === 'register'
+        ? t('authTitleRegister')
+        : authMode === 'forgot'
+          ? t('authTitleForgot')
+          : t('authTitleReset')
+
   const screen = el('div', { className: 'screen auth-screen', 'data-screen': 'auth' }, [
     el('h1', { className: 'logo', text: '✈ ' + t('appName') }),
     el('p', {
       className: 'tagline',
       text: t('authTagline'),
     }),
-    el('div', { className: 'card auth-card' }, [
-      el('h2', { text: title }),
+    el('div', { className: 'card auth-card' }, [el('h2', { text: title })]),
+  ])
+
+  const card = screen.querySelector('.auth-card') as HTMLElement
+
+  if (authMode === 'login' || authMode === 'register') {
+    card.appendChild(
       el('div', { className: 'tabs' }, [
         el('button', {
           className: `tab ${authMode === 'login' ? 'active' : ''}`,
           type: 'button',
-          'data-action': 'tab-login',
           text: t('tabLogin'),
           onClick: () => {
             authMode = 'login'
             authError = ''
+            authNote = ''
             paint()
           },
         }),
         el('button', {
           className: `tab ${authMode === 'register' ? 'active' : ''}`,
           type: 'button',
-          'data-action': 'tab-register',
           text: t('tabRegister'),
           onClick: () => {
             authMode = 'register'
             authError = ''
+            authNote = ''
             paint()
           },
         }),
       ]),
-    ]),
-  ])
+    )
+  }
 
-  const card = screen.querySelector('.auth-card') as HTMLElement
   const userInput = el('input', {
     type: 'text',
     id: 'auth-user',
     autocomplete: authMode === 'login' ? 'username' : 'nickname',
     maxlength: '20',
-    placeholder: t('username'),
-    'aria-label': t('username'),
+    placeholder: authMode === 'login' ? t('usernameOrEmail') : t('username'),
+    'aria-label': authMode === 'login' ? t('usernameOrEmail') : t('username'),
   }) as HTMLInputElement
   userInput.value = authUserDraft
   userInput.addEventListener('input', () => {
     authUserDraft = userInput.value
   })
+
+  const emailInput = el('input', {
+    type: 'email',
+    id: 'auth-email',
+    autocomplete: 'email',
+    maxlength: '120',
+    placeholder: t('emailPlaceholder'),
+    'aria-label': t('email'),
+  }) as HTMLInputElement
+  emailInput.value = authEmailDraft
+  emailInput.addEventListener('input', () => {
+    authEmailDraft = emailInput.value
+  })
+
   const passInput = el('input', {
     type: 'password',
     id: 'auth-pass',
-    autocomplete: authMode === 'login' ? 'current-password' : 'new-password',
+    autocomplete:
+      authMode === 'login' ? 'current-password' : authMode === 'forgot' ? 'off' : 'new-password',
     maxlength: '64',
     placeholder: t('passwordPlaceholder'),
     'aria-label': t('password'),
@@ -735,48 +810,197 @@ function authScreen(): HTMLElement {
     authPassDraft = passInput.value
   })
 
-  card.append(
-    el('div', { className: 'field' }, [el('label', { for: 'auth-user', text: t('username') }), userInput]),
-    el('div', { className: 'field' }, [el('label', { for: 'auth-pass', text: t('password') }), passInput]),
-  )
+  const pass2Input = el('input', {
+    type: 'password',
+    id: 'auth-pass2',
+    autocomplete: 'new-password',
+    maxlength: '64',
+    placeholder: t('passwordConfirmPlaceholder'),
+    'aria-label': t('passwordConfirm'),
+  }) as HTMLInputElement
+  pass2Input.value = authPass2Draft
+  pass2Input.addEventListener('input', () => {
+    authPass2Draft = pass2Input.value
+  })
+
+  if (authMode === 'login') {
+    card.append(
+      el('div', { className: 'field' }, [
+        el('label', { for: 'auth-user', text: t('usernameOrEmail') }),
+        userInput,
+      ]),
+      el('div', { className: 'field' }, [el('label', { for: 'auth-pass', text: t('password') }), passInput]),
+    )
+  } else if (authMode === 'register') {
+    card.append(
+      el('div', { className: 'field' }, [el('label', { for: 'auth-user', text: t('username') }), userInput]),
+      el('div', { className: 'field' }, [el('label', { for: 'auth-email', text: t('email') }), emailInput]),
+      el('div', { className: 'field' }, [el('label', { for: 'auth-pass', text: t('password') }), passInput]),
+      el('p', { className: 'hint', text: t('registerEmailHint') }),
+    )
+  } else if (authMode === 'forgot') {
+    card.append(
+      el('p', { className: 'hint', text: t('forgotHint') }),
+      el('div', { className: 'field' }, [el('label', { for: 'auth-email', text: t('email') }), emailInput]),
+    )
+  } else if (authMode === 'reset') {
+    card.append(
+      el('p', { className: 'hint', text: t('resetHint') }),
+      el('div', { className: 'field' }, [el('label', { for: 'auth-pass', text: t('newPassword') }), passInput]),
+      el('div', { className: 'field' }, [
+        el('label', { for: 'auth-pass2', text: t('passwordConfirm') }),
+        pass2Input,
+      ]),
+    )
+  }
 
   if (authError) card.appendChild(el('div', { className: 'banner hit', text: authError }))
+  if (authNote && authNote !== 'NEED_RESEND') {
+    card.appendChild(el('div', { className: 'banner', text: authNote }))
+  }
+
+  const submitLabel =
+    authMode === 'login'
+      ? t('btnLogin')
+      : authMode === 'register'
+        ? t('btnRegister')
+        : authMode === 'forgot'
+          ? t('btnSendReset')
+          : t('btnResetPassword')
 
   card.appendChild(
     el('button', {
       className: 'btn btn-primary btn-block',
       type: 'button',
-      'data-action': 'auth-submit',
       disabled: authBusy,
-      text: authBusy ? t('processing') : authMode === 'login' ? t('btnLogin') : t('btnRegister'),
+      text: authBusy ? t('processing') : submitLabel,
       onClick: async () => {
         authUserDraft = userInput.value
         authPassDraft = passInput.value
+        authEmailDraft = emailInput.value
+        authPass2Draft = pass2Input.value
         authBusy = true
         authError = ''
+        authNote = ''
         paint()
         try {
-          const res =
-            authMode === 'login'
-              ? await login(authUserDraft.trim(), authPassDraft)
-              : await register(authUserDraft.trim(), authPassDraft)
-          currentUser = res.user
-          authBusy = false
-          authPassDraft = ''
-          if (pendingInviteCode) {
-            await acceptPendingInvite()
-          } else {
+          if (authMode === 'login') {
+            const res = await login(authUserDraft.trim(), authPassDraft)
+            currentUser = res.user
+            authBusy = false
+            authPassDraft = ''
+            if (pendingInviteCode) await acceptPendingInvite()
+            else {
+              uiPhase = 'home'
+              try {
+                await socket.connect()
+                await refreshActiveGames()
+              } catch {
+                /* */
+              }
+              paint()
+            }
+            return
+          }
+          if (authMode === 'register') {
+            const res = await register(authUserDraft.trim(), authPassDraft, authEmailDraft.trim())
+            authBusy = false
+            authPassDraft = ''
+            authNote = res.message + (res.debugVerifyLink ? `\n${res.debugVerifyLink}` : '')
+            authMode = 'login'
+            paint()
+            return
+          }
+          if (authMode === 'forgot') {
+            const res = await forgotPassword(authEmailDraft.trim())
+            authBusy = false
+            authNote = res.message + (res.debugResetLink ? `\n${res.debugResetLink}` : '')
+            paint()
+            return
+          }
+          if (authMode === 'reset') {
+            if (authPassDraft !== authPass2Draft) throw new Error(t('passwordMismatch'))
+            if (!resetTokenFromUrl) throw new Error(t('resetTokenMissing'))
+            const res = await resetPassword(resetTokenFromUrl, authPassDraft)
+            currentUser = res.user
+            resetTokenFromUrl = null
+            authBusy = false
+            authPassDraft = ''
+            authPass2Draft = ''
+            // clean URL
+            const u = new URL(location.href)
+            u.searchParams.delete('reset')
+            history.replaceState({}, '', u.pathname + (u.search || '') + u.hash)
             uiPhase = 'home'
             paint()
+            return
           }
         } catch (e) {
           authBusy = false
-          authError = (e as Error).message
+          const err = e as Error & { code?: string }
+          if (err.code === 'EMAIL_NOT_VERIFIED' || err.message === 'EMAIL_NOT_VERIFIED') {
+            authError = t('emailNotVerified')
+            authNote = 'NEED_RESEND'
+          } else {
+            authError = err.message
+          }
           paint()
         }
       },
     }),
   )
+
+  if (authMode === 'login') {
+    card.appendChild(
+      el('button', {
+        className: 'btn btn-ghost btn-block',
+        type: 'button',
+        text: t('forgotPasswordLink'),
+        onClick: () => {
+          authMode = 'forgot'
+          authError = ''
+          authNote = ''
+          paint()
+        },
+      }),
+    )
+    if (authNote === 'NEED_RESEND') {
+      card.appendChild(
+        el('button', {
+          className: 'btn btn-sky btn-block',
+          type: 'button',
+          text: t('resendVerify'),
+          onClick: async () => {
+            try {
+              const res = await resendVerification(authUserDraft.trim() || authEmailDraft.trim())
+              authNote = res.message + (res.debugVerifyLink ? `\n${res.debugVerifyLink}` : '')
+              authError = ''
+              paint()
+            } catch (e) {
+              authError = (e as Error).message
+              paint()
+            }
+          },
+        }),
+      )
+    }
+  }
+
+  if (authMode === 'forgot' || authMode === 'reset') {
+    card.appendChild(
+      el('button', {
+        className: 'btn btn-ghost btn-block',
+        type: 'button',
+        text: t('backToLogin'),
+        onClick: () => {
+          authMode = 'login'
+          authError = ''
+          authNote = ''
+          paint()
+        },
+      }),
+    )
+  }
 
   if (pendingInviteCode) {
     card.appendChild(
@@ -786,6 +1010,207 @@ function authScreen(): HTMLElement {
       }),
     )
   }
+
+  return screen
+}
+
+function settingsScreen(): HTMLElement {
+  const u = currentUser!
+  const screen = el('div', { className: 'screen', 'data-screen': 'settings' }, [
+    el('h2', { text: t('settingsTitle') }),
+  ])
+
+  // —— Avatar ——
+  const avatarCard = el('div', { className: 'card settings-card' }, [
+    el('h3', { text: t('settingsAvatar') }),
+  ])
+  const preview = el('div', {
+    className: 'avatar-preview',
+    style: u.avatarDataUrl
+      ? `background-image:url(${u.avatarDataUrl})`
+      : undefined,
+    text: u.avatarDataUrl ? '' : (u.username[0] || '?').toUpperCase(),
+  })
+  const fileInput = el('input', {
+    type: 'file',
+    accept: 'image/jpeg,image/png,image/webp',
+    className: 'sr-only',
+    id: 'avatar-file',
+  }) as HTMLInputElement
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files?.[0]
+    if (!file) return
+    if (file.size > 120_000) {
+      settingsError = t('avatarTooBig')
+      paint()
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = async () => {
+      try {
+        settingsBusy = true
+        settingsError = ''
+        paint()
+        const dataUrl = String(reader.result || '')
+        currentUser = await uploadAvatar(dataUrl)
+        settingsNote = t('avatarSaved')
+        settingsBusy = false
+        paint()
+      } catch (e) {
+        settingsBusy = false
+        settingsError = (e as Error).message
+        paint()
+      }
+    }
+    reader.readAsDataURL(file)
+  })
+  avatarCard.append(
+    preview,
+    el('div', { className: 'btn-row' }, [
+      el('button', {
+        className: 'btn btn-sky',
+        type: 'button',
+        text: t('choosePhoto'),
+        disabled: settingsBusy,
+        onClick: () => fileInput.click(),
+      }),
+      el('button', {
+        className: 'btn btn-ghost',
+        type: 'button',
+        text: t('removePhoto'),
+        disabled: settingsBusy || !u.avatarDataUrl,
+        onClick: async () => {
+          try {
+            currentUser = await uploadAvatar('')
+            settingsNote = t('avatarRemoved')
+            paint()
+          } catch (e) {
+            settingsError = (e as Error).message
+            paint()
+          }
+        },
+      }),
+    ]),
+    fileInput,
+  )
+  screen.appendChild(avatarCard)
+
+  // —— Email ——
+  const emailInput = el('input', {
+    type: 'email',
+    id: 'set-email',
+    value: u.email || '',
+    autocomplete: 'email',
+    maxlength: '120',
+  }) as HTMLInputElement
+  emailInput.value = u.email || ''
+  const emailCard = el('div', { className: 'card settings-card' }, [
+    el('h3', { text: t('settingsEmail') }),
+    el('p', {
+      className: 'hint',
+      text: u.emailVerified ? t('emailVerifiedOk') : t('emailNotVerifiedShort'),
+    }),
+    el('div', { className: 'field' }, [el('label', { for: 'set-email', text: t('email') }), emailInput]),
+    el('button', {
+      className: 'btn btn-primary btn-block',
+      type: 'button',
+      text: t('saveEmail'),
+      disabled: settingsBusy,
+      onClick: async () => {
+        try {
+          settingsBusy = true
+          settingsError = ''
+          paint()
+          const res = await changeEmail(emailInput.value.trim())
+          currentUser = res.user
+          updateStoredUser(res.user)
+          settingsNote = res.message + (res.debugVerifyLink ? `\n${res.debugVerifyLink}` : '')
+          settingsBusy = false
+          paint()
+        } catch (e) {
+          settingsBusy = false
+          settingsError = (e as Error).message
+          paint()
+        }
+      },
+    }),
+  ])
+  screen.appendChild(emailCard)
+
+  // —— Password ——
+  const curPass = el('input', {
+    type: 'password',
+    id: 'set-cur-pass',
+    autocomplete: 'current-password',
+    maxlength: '64',
+  }) as HTMLInputElement
+  const newPass = el('input', {
+    type: 'password',
+    id: 'set-new-pass',
+    autocomplete: 'new-password',
+    maxlength: '64',
+  }) as HTMLInputElement
+  const newPass2 = el('input', {
+    type: 'password',
+    id: 'set-new-pass2',
+    autocomplete: 'new-password',
+    maxlength: '64',
+  }) as HTMLInputElement
+  const passCard = el('div', { className: 'card settings-card' }, [
+    el('h3', { text: t('settingsPassword') }),
+    el('div', { className: 'field' }, [
+      el('label', { for: 'set-cur-pass', text: t('currentPassword') }),
+      curPass,
+    ]),
+    el('div', { className: 'field' }, [el('label', { for: 'set-new-pass', text: t('newPassword') }), newPass]),
+    el('div', { className: 'field' }, [
+      el('label', { for: 'set-new-pass2', text: t('passwordConfirm') }),
+      newPass2,
+    ]),
+    el('button', {
+      className: 'btn btn-primary btn-block',
+      type: 'button',
+      text: t('savePassword'),
+      disabled: settingsBusy,
+      onClick: async () => {
+        try {
+          if (newPass.value !== newPass2.value) throw new Error(t('passwordMismatch'))
+          settingsBusy = true
+          settingsError = ''
+          paint()
+          await changePassword(curPass.value, newPass.value)
+          settingsNote = t('passwordChanged')
+          settingsBusy = false
+          curPass.value = ''
+          newPass.value = ''
+          newPass2.value = ''
+          paint()
+        } catch (e) {
+          settingsBusy = false
+          settingsError = (e as Error).message
+          paint()
+        }
+      },
+    }),
+  ])
+  screen.appendChild(passCard)
+
+  if (settingsError) screen.appendChild(el('div', { className: 'banner hit', text: settingsError }))
+  if (settingsNote) screen.appendChild(el('div', { className: 'banner', text: settingsNote }))
+
+  screen.appendChild(
+    el('button', {
+      className: 'btn btn-ghost btn-block',
+      type: 'button',
+      text: t('backHome'),
+      onClick: () => {
+        settingsNote = ''
+        settingsError = ''
+        uiPhase = 'home'
+        paint()
+      },
+    }),
+  )
 
   return screen
 }
@@ -885,15 +1310,6 @@ function homeScreen(): HTMLElement {
           engine.mode = 'online-join'
           statusNote = t('pasteCodeHint')
           uiPhase = 'online-lobby'
-          paint()
-        },
-      }),
-      el('button', {
-        className: 'btn btn-ghost btn-block',
-        text: t('leaderboard'),
-        onClick: async () => {
-          leaders = await fetchLeaderboard().catch(() => [])
-          uiPhase = 'leaderboard'
           paint()
         },
       }),
@@ -1551,33 +1967,6 @@ function gameOverScreen(): HTMLElement {
           },
         }),
       ]),
-    ]),
-  ])
-}
-
-function leaderboardScreen(): HTMLElement {
-  return el('div', { className: 'screen', 'data-screen': 'leaderboard' }, [
-    el('h2', { text: t('leaderboard') }),
-    el('div', { className: 'card' }, [
-      leaders.length === 0
-        ? el('p', { className: 'hint', text: t('noLeaders') })
-        : el('ol', { className: 'leader-list' }, [
-            ...leaders.map((u, i) =>
-              el('li', {
-                className: currentUser?.id === u.id ? 'me' : '',
-                text: t('leaderLine', { rank: i + 1, name: u.username, wins: u.wins, losses: u.losses, games: u.gamesPlayed }),
-              }),
-            ),
-          ]),
-      el('button', {
-        className: 'btn btn-ghost btn-block',
-        style: 'margin-top:12px',
-        text: t('back'),
-        onClick: () => {
-          uiPhase = 'home'
-          paint()
-        },
-      }),
     ]),
   ])
 }

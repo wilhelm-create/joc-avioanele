@@ -3,12 +3,16 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 /**
- * Usability — remote multiplayer + RO/EN.
+ * Usability — remote multiplayer + RO/EN + auth/email.
  */
 
 function uniqueUser() {
   const n = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
-  return { username: `u_${n}`.slice(0, 20), password: 'testpass123' }
+  return {
+    username: `u_${n}`.slice(0, 20),
+    password: 'testpass123',
+    email: `u_${n}@example.com`,
+  }
 }
 
 async function forceLang(page: import('@playwright/test').Page, lang: 'ro' | 'en') {
@@ -17,16 +21,47 @@ async function forceLang(page: import('@playwright/test').Page, lang: 'ro' | 'en
   }, lang)
 }
 
+/** Register via API + verify email (works with log-mode mail) */
+async function registerViaApi(
+  request: import('@playwright/test').APIRequestContext,
+  u: { username: string; password: string; email: string },
+) {
+  const reg = await request.post('http://127.0.0.1:3000/api/auth/register', {
+    data: { username: u.username, password: u.password, email: u.email },
+  })
+  const body = (await reg.json()) as {
+    error?: string
+    debugVerifyLink?: string
+    needsVerification?: boolean
+  }
+  expect(reg.ok(), body.error || 'register failed').toBeTruthy()
+  // extract token from debug link (no Resend in CI)
+  let token = ''
+  if (body.debugVerifyLink) {
+    token = (body.debugVerifyLink.match(/verify=([A-Za-z0-9]+)/) || [])[1] || ''
+  }
+  expect(token, 'debug verify token required without RESEND_API_KEY').toBeTruthy()
+  const ver = await request.post('http://127.0.0.1:3000/api/auth/verify-email', {
+    data: { token },
+  })
+  const vbody = (await ver.json()) as { token?: string; user?: { username: string }; error?: string }
+  expect(ver.ok(), vbody.error || 'verify failed').toBeTruthy()
+  return vbody as { token: string; user: { username: string } }
+}
+
 async function registerFresh(page: import('@playwright/test').Page, lang: 'ro' | 'en' = 'ro') {
   await forceLang(page, lang)
   const u = uniqueUser()
+  // Use API for reliability, then inject session via login
+  const request = page.request
+  await registerViaApi(request, u)
   await page.goto('/')
   await expect(page.locator('[data-screen="auth"]')).toBeVisible({ timeout: 15000 })
-  // Cont nou / Sign up
-  await page.locator('[data-action="tab-register"]').click()
+  // login tab
+  await page.getByRole('button', { name: /Intră în cont|Sign in/i }).first().click()
   await page.locator('#auth-user').fill(u.username)
   await page.locator('#auth-pass').fill(u.password)
-  await page.locator('[data-action="auth-submit"]').click()
+  await page.locator('.auth-card .btn-primary').click()
   await expect(page.locator('[data-screen="home"]')).toBeVisible({ timeout: 15000 })
   return u
 }
@@ -42,10 +77,8 @@ test.describe('Avioane i18n + remote', () => {
     await expect(page.locator('[data-control="theme"]')).toBeVisible()
     await expect(page.getByRole('button', { name: 'RO' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'EN' })).toBeVisible()
-    // switch to light
     await page.locator('[data-theme-opt="light"]').click()
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
-    // switch to dark
     await page.locator('[data-theme-opt="dark"]').click()
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
     await page.getByRole('button', { name: 'EN' }).click()
@@ -58,13 +91,15 @@ test.describe('Avioane i18n + remote', () => {
     await registerFresh(page, 'en')
     await expect(page.getByRole('button', { name: /Invite a friend/i })).toBeVisible()
     await expect(page.getByRole('button', { name: /invite code/i })).toBeVisible()
-    await expect(page.locator('#main').getByRole('button', { name: /Leaderboard/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Settings/i })).toBeVisible()
+    await expect(page.locator('.user-chip')).toHaveCount(0)
   })
 
   test('home invite actions in Romanian', async ({ page }) => {
     await registerFresh(page, 'ro')
     await expect(page.getByRole('button', { name: /Invită un prieten/i })).toBeVisible()
     await expect(page.getByRole('button', { name: /cod \/ link/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Setări/i })).toBeVisible()
   })
 
   test('host lobby share WhatsApp email SMS + link (RO)', async ({ page }) => {
@@ -81,10 +116,7 @@ test.describe('Avioane i18n + remote', () => {
 
   test('deep link join after auth', async ({ page, request }) => {
     const host = uniqueUser()
-    const reg = await request.post('http://127.0.0.1:3000/api/auth/register', {
-      data: { username: host.username, password: host.password },
-    })
-    const { token } = (await reg.json()) as { token: string }
+    const { token } = await registerViaApi(request, host)
     const roomRes = await request.post('http://127.0.0.1:3000/api/rooms/create', {
       headers: { Authorization: `Bearer ${token}` },
     })
@@ -93,11 +125,18 @@ test.describe('Avioane i18n + remote', () => {
     await forceLang(page, 'en')
     await page.goto(`/?room=${code}`)
     await expect(page.locator('[data-screen="auth"]')).toBeVisible({ timeout: 10000 })
-    await page.locator('[data-action="tab-register"]').click()
+    await page.getByRole('button', { name: /Sign up|New account|Cont nou/i }).click()
     const guest = uniqueUser()
     await page.locator('#auth-user').fill(guest.username)
+    await page.locator('#auth-email').fill(guest.email)
     await page.locator('#auth-pass').fill(guest.password)
-    await page.locator('[data-action="auth-submit"]').click()
+    await page.locator('.auth-card .btn-primary').click()
+    // after register: verification pending message
+    await expect(page.locator('.auth-card .banner')).toBeVisible({ timeout: 10000 })
+    const banner = (await page.locator('.auth-card .banner').first().textContent()) || ''
+    const tok = (banner.match(/verify=([A-Za-z0-9]+)/) || [])[1]
+    expect(tok).toBeTruthy()
+    await page.goto(`/?room=${code}&verify=${tok}`)
     await expect(page.locator('[data-screen="online-lobby"], [data-screen="placement"]')).toBeVisible({
       timeout: 15000,
     })
@@ -116,5 +155,7 @@ test.describe('Avioane i18n + remote', () => {
     expect(src).toMatch(/en:\s*\{/)
     expect(src).toMatch(/inviteFriend/)
     expect(src).toMatch(/Invite a friend/)
+    expect(src).toMatch(/settings/)
+    expect(src).toMatch(/forgotPasswordLink/)
   })
 })

@@ -473,6 +473,15 @@ body.app-shell::after {
   min-width: 36px;
 }
 
+.header-user-actions-end {
+  margin-left: auto;
+  width: 100%;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .header-user-actions .btn-sm {
   min-height: 34px;
   padding: 6px 10px;
@@ -1317,6 +1326,49 @@ button.btn-block[data-action='confirm-fleet'] {
 button.btn-block[data-action='confirm-fleet']:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* ——— Settings ——— */
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.settings-card h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.avatar-preview {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  font-weight: 800;
+  color: var(--btn-text);
+  background: linear-gradient(135deg, var(--brand), var(--orange));
+  background-size: cover;
+  background-position: center;
+  border: 2px solid var(--border);
+  box-shadow: var(--glass-shadow);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ——— Active games (multi-match) ——— */

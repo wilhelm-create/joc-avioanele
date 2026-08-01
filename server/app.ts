@@ -10,8 +10,16 @@ import {
   listLeaderboard,
   recordMatch,
   storageMode,
+  verifyEmailToken,
+  resendVerification,
+  requestPasswordReset,
+  resetPasswordWithToken,
+  changePassword,
+  changeEmail,
+  setAvatar,
   type PublicUser,
 } from './db.js'
+import { sendVerifyEmail, sendPasswordResetEmail } from './email.js'
 import {
   createRoom,
   joinRoom,
@@ -33,7 +41,8 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev-avioane-secret-change-me'
 export function createApp() {
   const app = express()
   app.use(cors({ origin: true, credentials: true }))
-  app.use(express.json({ limit: '64kb' }))
+  // larger limit for avatar data URLs
+  app.use(express.json({ limit: '256kb' }))
 
   function signToken(user: PublicUser): string {
     return jwt.sign({ sub: user.id, username: user.username }, JWT_SECRET, { expiresIn: '30d' })
@@ -76,13 +85,30 @@ export function createApp() {
 
   app.post('/api/auth/register', async (req, res) => {
     try {
-      const { username, password } = req.body as { username?: string; password?: string }
-      if (!username || !password) {
-        res.status(400).json({ error: 'Username și parolă obligatorii' })
+      const { username, password, email } = req.body as {
+        username?: string
+        password?: string
+        email?: string
+      }
+      if (!username || !password || !email) {
+        res.status(400).json({ error: 'Username, email și parolă obligatorii' })
         return
       }
-      const user = await createUser(username, password)
-      res.status(201).json({ user, token: signToken(user) })
+      const { user, verifyToken } = await createUser(username, password, email)
+      const mail = await sendVerifyEmail(user.email, user.username, verifyToken)
+      if (!mail.ok) {
+        res.status(502).json({ error: 'Nu am putut trimite emailul de verificare' })
+        return
+      }
+      // No token until email confirmed
+      res.status(201).json({
+        ok: true,
+        needsVerification: true,
+        user: { id: user.id, username: user.username, email: user.email },
+        message: 'Verifică emailul — ți-am trimis un link de confirmare',
+        // only when Resend is not configured (local/dev)
+        ...(mail.debugLink ? { debugVerifyLink: mail.debugLink } : {}),
+      })
     } catch (e) {
       res.status(400).json({ error: (e as Error).message })
     }
@@ -92,19 +118,145 @@ export function createApp() {
     try {
       const { username, password } = req.body as { username?: string; password?: string }
       if (!username || !password) {
-        res.status(400).json({ error: 'Username și parolă obligatorii' })
+        res.status(400).json({ error: 'Username/email și parolă obligatorii' })
         return
       }
       const user = await verifyLogin(username, password)
       res.json({ user, token: signToken(user) })
     } catch (e) {
-      res.status(401).json({ error: (e as Error).message })
+      const msg = (e as Error).message
+      if (msg === 'EMAIL_NOT_VERIFIED') {
+        res.status(403).json({ error: 'EMAIL_NOT_VERIFIED', code: 'EMAIL_NOT_VERIFIED' })
+        return
+      }
+      res.status(401).json({ error: msg })
+    }
+  })
+
+  app.post('/api/auth/verify-email', async (req, res) => {
+    try {
+      const { token } = req.body as { token?: string }
+      if (!token) {
+        res.status(400).json({ error: 'Token lipsă' })
+        return
+      }
+      const user = await verifyEmailToken(token)
+      res.json({ user, token: signToken(user) })
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message })
+    }
+  })
+
+  app.post('/api/auth/resend-verification', async (req, res) => {
+    try {
+      const { username } = req.body as { username?: string }
+      if (!username) {
+        res.status(400).json({ error: 'Username sau email obligatoriu' })
+        return
+      }
+      const { user, verifyToken } = await resendVerification(username)
+      const mail = await sendVerifyEmail(user.email, user.username, verifyToken)
+      res.json({
+        ok: true,
+        message: 'Am retrimis linkul de verificare',
+        ...(mail.debugLink ? { debugVerifyLink: mail.debugLink } : {}),
+      })
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message })
+    }
+  })
+
+  app.post('/api/auth/forgot-password', async (req, res) => {
+    try {
+      const { email } = req.body as { email?: string }
+      if (!email) {
+        res.status(400).json({ error: 'Email obligatoriu' })
+        return
+      }
+      const result = await requestPasswordReset(email)
+      let debugLink: string | undefined
+      if (result) {
+        const mail = await sendPasswordResetEmail(result.user.email, result.user.username, result.resetToken)
+        debugLink = mail.debugLink
+      }
+      // Always same response (no email enumeration)
+      res.json({
+        ok: true,
+        message: 'Dacă există un cont cu acest email, vei primi un link de resetare',
+        ...(debugLink ? { debugResetLink: debugLink } : {}),
+      })
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message })
+    }
+  })
+
+  app.post('/api/auth/reset-password', async (req, res) => {
+    try {
+      const { token, password } = req.body as { token?: string; password?: string }
+      if (!token || !password) {
+        res.status(400).json({ error: 'Token și parolă obligatorii' })
+        return
+      }
+      const user = await resetPasswordWithToken(token, password)
+      res.json({ user, token: signToken(user), message: 'Parola a fost schimbată' })
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message })
     }
   })
 
   app.get('/api/auth/me', requireAuth, async (req, res) => {
     const user = (req as express.Request & { user: PublicUser }).user
     res.json({ user: await getPublic(user.id) })
+  })
+
+  app.post('/api/auth/change-password', requireAuth, async (req, res) => {
+    try {
+      const user = (req as express.Request & { user: PublicUser }).user
+      const { currentPassword, newPassword } = req.body as {
+        currentPassword?: string
+        newPassword?: string
+      }
+      if (!currentPassword || !newPassword) {
+        res.status(400).json({ error: 'Parola actuală și nouă sunt obligatorii' })
+        return
+      }
+      await changePassword(user.id, currentPassword, newPassword)
+      res.json({ ok: true, message: 'Parola a fost actualizată' })
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message })
+    }
+  })
+
+  app.post('/api/auth/change-email', requireAuth, async (req, res) => {
+    try {
+      const user = (req as express.Request & { user: PublicUser }).user
+      const { email } = req.body as { email?: string }
+      if (!email) {
+        res.status(400).json({ error: 'Email obligatoriu' })
+        return
+      }
+      const { user: updated, verifyToken } = await changeEmail(user.id, email)
+      const mail = await sendVerifyEmail(updated.email, updated.username, verifyToken)
+      res.json({
+        user: updated,
+        needsVerification: true,
+        message: 'Email actualizat — confirmă noul email din inbox',
+        ...(mail.debugLink ? { debugVerifyLink: mail.debugLink } : {}),
+      })
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message })
+    }
+  })
+
+  app.post('/api/auth/avatar', requireAuth, async (req, res) => {
+    try {
+      const user = (req as express.Request & { user: PublicUser }).user
+      const { dataUrl } = req.body as { dataUrl?: string }
+      const updated = await setAvatar(user.id, dataUrl || '')
+      res.json({ user: updated })
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message })
+    }
   })
 
   app.get('/api/leaderboard', async (_req, res) => {
