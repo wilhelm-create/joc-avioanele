@@ -24,10 +24,10 @@ async function registerFresh(page: import('@playwright/test').Page) {
 }
 
 test.describe('Avioane remote invite usability', () => {
-  test('auth gate — not pass-and-play messaging', async ({ page }) => {
+  test('auth gate — login/register visible', async ({ page }) => {
     await page.goto('/')
     await expect(page.locator('[data-screen="auth"]')).toBeVisible()
-    await expect(page.getByText(/Nu se dă telefonul|device-ul lui|de pe telefonul/i).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: /Cont nou/i })).toBeVisible()
   })
 
   test('home offers invite SMS/link and join — no pass & play', async ({ page }) => {
