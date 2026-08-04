@@ -3,8 +3,9 @@
  * Run: npx tsx src/game/engine.test.ts
  */
 import { GameEngine } from './engine'
+import { AiOpponent } from './ai'
 import { planeCells, isValidPlacement, PLANE_CELL_COUNT } from './plane'
-import type { Orientation } from './types'
+import type { CellState, Orientation } from './types'
 
 function assert(cond: unknown, msg: string) {
   if (!cond) throw new Error('FAIL: ' + msg)
@@ -113,11 +114,69 @@ function testNoGreenInCss() {
   console.log('✓ (css checked in usability suite)')
 }
 
+function testVsAiGame() {
+  const g = new GameEngine()
+  g.applySettings({ difficulty: 'easy', gridSize: 10, planesPerPlayer: 3, longWings: false })
+  g.startVsAi('Tester')
+  assert(g.mode === 'vs-ai', 'mode vs-ai')
+  assert(g.phase === 'placement', 'placement')
+  assert(g.autoPlaceRemaining(), 'human auto place')
+  assert(g.confirmPlacement(), 'confirm starts battle with AI fleet')
+  assert(g.phase === 'battle', 'battle after confirm')
+  assert(g.p2.planes.length === 3, 'AI placed 3 planes')
+  assert(g.currentPlayer === 'p1', 'human shoots first')
+  assert(g.p1.name === 'Tester', 'human name')
+
+  // Finish by sinking all AI cockpits
+  const heads = g.p2.planes.map((p) => ({ ...p.headCell }))
+  for (const head of heads) {
+    assert(g.currentPlayer === 'p1', 'human turn for head')
+    const res = g.fire(head, 'p1')
+    assert(res.kind === 'sunk', 'sunk AI head got ' + res.kind)
+    if (g.phase === 'game-over') break
+    // AI would shoot; fire a safe miss as p2
+    if (g.currentPlayer === 'p2' && g.phase === 'battle') {
+      outer: for (let r = 0; r < 10; r++) {
+        for (let c = 0; c < 10; c++) {
+          if (!g.p2.fired.has(`${r},${c}`) && !g.p1.fleet.has(`${r},${c}`)) {
+            g.fire({ r, c }, 'p2')
+            break outer
+          }
+        }
+      }
+    }
+  }
+  assert(g.phase === 'game-over', 'vs-ai game over')
+  assert(g.winner === 'p1', 'human wins')
+  console.log('✓ vs-ai game')
+}
+
+function testAiChooser() {
+  let i = 0
+  const seq = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.15, 0.25]
+  const rng = () => seq[i++ % seq.length]
+  const ai = new AiOpponent(rng)
+  const fired = new Map<string, CellState>()
+  const a = ai.chooseShot('easy', 10, fired)
+  assert(a.r >= 0 && a.r < 10 && a.c >= 0 && a.c < 10, 'shot in bounds')
+  fired.set(`${a.r},${a.c}`, 'miss')
+  // after a hit, hard should prefer adjacent
+  fired.set('4,4', 'hit')
+  const hunt = ai.chooseShot('hard', 10, fired)
+  const adj =
+    (Math.abs(hunt.r - 4) === 1 && hunt.c === 4) ||
+    (Math.abs(hunt.c - 4) === 1 && hunt.r === 4)
+  assert(adj, 'hard hunts adjacent to hit')
+  console.log('✓ ai chooser')
+}
+
 function main() {
   testPlaneShape()
   testRotations()
   testFullLocalGame()
   testRadarCookie()
+  testVsAiGame()
+  testAiChooser()
   testNoGreenInCss()
   console.log('\nAll engine tests passed.')
 }

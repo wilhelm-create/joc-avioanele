@@ -1,4 +1,5 @@
 import { GameEngine } from '../game/engine'
+import { aiOpponent } from '../game/ai'
 import type { Coord, GameSnapshot, Orientation, PlayerId, ShotResult } from '../game/types'
 import {
   clampSettings,
@@ -57,12 +58,16 @@ type UiPhase =
   | 'boot'
   | 'auth'
   | 'home'
+  | 'vs-ai-setup'
   | 'online-lobby'
   | 'placement'
   | 'waiting-opponent'
   | 'battle'
   | 'game-over'
   | 'settings'
+
+/** Pending AI turn timer (vs-ai mode) */
+let aiTurnTimer: ReturnType<typeof setTimeout> | null = null
 
 const engine = new GameEngine()
 const socket = new GameSocket()
@@ -147,11 +152,12 @@ function statusLabel(g: ActiveGame): string {
 }
 
 async function goHome(opts?: { leaveCurrent?: boolean }) {
+  cancelAiTurn()
   const leave = opts?.leaveCurrent === true
   if (leave && roomCode) {
     socket.send({ type: 'leave-room', code: roomCode })
     clearGameSession(roomCode)
-  } else {
+  } else if (engine.mode !== 'vs-ai') {
     saveActiveSession()
   }
   socket.setActiveRoom(null)
@@ -638,6 +644,8 @@ function view(): HTMLElement {
       return shell(authScreen())
     case 'home':
       return shell(homeScreen())
+    case 'vs-ai-setup':
+      return shell(vsAiSetupScreen())
     case 'settings':
       return shell(settingsScreen())
     case 'online-lobby':
@@ -652,6 +660,58 @@ function view(): HTMLElement {
       return shell(gameOverScreen())
     default:
       return shell(homeScreen())
+  }
+}
+
+function cancelAiTurn() {
+  if (aiTurnTimer != null) {
+    clearTimeout(aiTurnTimer)
+    aiTurnTimer = null
+  }
+}
+
+/** After human shot (or battle start if AI somehow first), schedule computer move. */
+function scheduleAiTurn() {
+  cancelAiTurn()
+  if (engine.mode !== 'vs-ai') return
+  if (engine.phase !== 'battle') return
+  if (engine.currentPlayer !== 'p2') return
+  if (engine.winner) return
+
+  const delay = 450 + Math.floor(Math.random() * 550)
+  aiTurnTimer = setTimeout(() => {
+    aiTurnTimer = null
+    runAiTurn()
+  }, delay)
+}
+
+function runAiTurn() {
+  if (engine.mode !== 'vs-ai' || engine.phase !== 'battle' || engine.currentPlayer !== 'p2') return
+  if (engine.winner) return
+
+  const diff = engine.settings.difficulty
+  const ai = engine.p2
+
+  if (
+    aiOpponent.shouldUseRadar(diff, ai.radarUsed, engine.turn, ai.fired, engine.gridSize)
+  ) {
+    const cells = engine.useRadar('p2')
+    if (cells.length) sfxRadar()
+  }
+
+  const shot = aiOpponent.chooseShot(diff, engine.gridSize, ai.fired)
+  const result = engine.fire(shot, 'p2', { silent: true })
+  playShotFx(result)
+
+  if (engine.winner) {
+    uiPhase = 'game-over'
+    paint()
+    return
+  }
+  if (uiPhase === 'battle') softRefreshBattle(shot)
+  else {
+    uiPhase = 'battle'
+    paint()
   }
 }
 
@@ -1369,12 +1429,30 @@ function homeScreen(): HTMLElement {
     el('div', { className: 'card grid-actions' }, [
       el('button', {
         className: 'btn btn-primary btn-block',
+        'data-action': 'vs-ai',
+        text: t('playVsAi'),
+        onClick: () => {
+          cancelAiTurn()
+          saveActiveSession()
+          roomInfo = null
+          roomCode = ''
+          myOnlineRole = null
+          socket.setActiveRoom(null)
+          // default medium preset for setup screen
+          const preset = DIFFICULTY_PRESETS[engine.settings.difficulty]
+          engine.applySettings({ ...engine.settings, ...preset }, true)
+          uiPhase = 'vs-ai-setup'
+          paint()
+        },
+      }),
+      el('button', {
+        className: 'btn btn-sky btn-block',
         'data-action': 'invite',
         text: t('inviteFriend'),
         onClick: () => void startOnlineHost(),
       }),
       el('button', {
-        className: 'btn btn-sky btn-block',
+        className: 'btn btn-ghost btn-block',
         'data-action': 'join-code',
         text: t('haveCode'),
         onClick: () => {
@@ -1390,6 +1468,141 @@ function homeScreen(): HTMLElement {
         },
       }),
     ]),
+  )
+
+  return screen
+}
+
+function vsAiSetupScreen(): HTMLElement {
+  const s = engine.settings
+  const screen = el('div', { className: 'screen', 'data-screen': 'vs-ai-setup' }, [
+    el('h1', { className: 'logo', text: '✈ ' + t('vsAiSetupTitle') }),
+    el('p', { className: 'tagline', text: t('vsAiSetupHint') }),
+  ])
+
+  const card = el('div', { className: 'card game-settings-panel' })
+  card.appendChild(el('div', { className: 'settings-label', text: t('difficulty') }))
+
+  const diffRow = el('div', { className: 'diff-grid' })
+  const diffs: { id: Difficulty; key: string }[] = [
+    { id: 'easy', key: 'diffEasy' },
+    { id: 'medium', key: 'diffMedium' },
+    { id: 'hard', key: 'diffHard' },
+    { id: 'impossible', key: 'diffImpossible' },
+  ]
+  for (const d of diffs) {
+    diffRow.appendChild(
+      el('button', {
+        type: 'button',
+        className: `diff-btn ${s.difficulty === d.id ? 'active' : ''}`,
+        text: t(d.key),
+        'data-difficulty': d.id,
+        onClick: () => {
+          const preset = DIFFICULTY_PRESETS[d.id]
+          engine.applySettings({ difficulty: d.id, ...preset })
+          paint()
+        },
+      }),
+    )
+  }
+  card.appendChild(diffRow)
+
+  // Summary of what the preset means
+  card.appendChild(
+    el('p', {
+      className: 'hint',
+      text: `${s.gridSize}×${s.gridSize} · ${s.planesPerPlayer} ${t('numPlanes').toLowerCase()}${s.longWings ? ' · ' + t('longWings') : ''}`,
+    }),
+  )
+
+  // Optional fine-tune (same controls as multiplayer)
+  const gridLabel = el('div', {
+    className: 'settings-label',
+    text: `${t('numCells')}: ${s.gridSize}×${s.gridSize}`,
+  })
+  const gridSlider = el('input', {
+    type: 'range',
+    min: '8',
+    max: '14',
+    step: '1',
+    value: String(s.gridSize),
+    className: 'settings-range',
+  }) as HTMLInputElement
+  gridSlider.addEventListener('input', () => {
+    gridLabel.textContent = `${t('numCells')}: ${gridSlider.value}×${gridSlider.value}`
+  })
+  gridSlider.addEventListener('change', () => {
+    engine.applySettings({ gridSize: Number(gridSlider.value) })
+    paint()
+  })
+  card.append(gridLabel, gridSlider)
+
+  const planesLabel = el('div', {
+    className: 'settings-label',
+    text: `${t('numPlanes')}: ${s.planesPerPlayer}`,
+  })
+  const planesSlider = el('input', {
+    type: 'range',
+    min: '1',
+    max: '12',
+    step: '1',
+    value: String(s.planesPerPlayer),
+    className: 'settings-range',
+  }) as HTMLInputElement
+  planesSlider.addEventListener('input', () => {
+    planesLabel.textContent = `${t('numPlanes')}: ${planesSlider.value}`
+  })
+  planesSlider.addEventListener('change', () => {
+    engine.applySettings({ planesPerPlayer: Number(planesSlider.value) })
+    paint()
+  })
+  card.append(planesLabel, planesSlider)
+
+  card.appendChild(
+    el('button', {
+      type: 'button',
+      className: `toggle-btn ${s.longWings ? 'active' : ''}`,
+      text: s.longWings ? `✓ ${t('longWings')}` : t('longWings'),
+      onClick: () => {
+        engine.applySettings({ longWings: !engine.settings.longWings })
+        paint()
+      },
+    }),
+  )
+
+  screen.appendChild(card)
+
+  screen.appendChild(
+    el('button', {
+      className: 'btn btn-primary btn-block',
+      type: 'button',
+      'data-action': 'vs-ai-start',
+      text: t('vsAiStart'),
+      onClick: () => {
+        cancelAiTurn()
+        aiOpponent.reset()
+        const name = currentUser?.username || t('engineYou')
+        engine.startVsAi(name)
+        myOnlineRole = null
+        roomCode = ''
+        roomInfo = null
+        matchReported = false
+        uiPhase = 'placement'
+        paint()
+      },
+    }),
+  )
+
+  screen.appendChild(
+    el('button', {
+      className: 'btn btn-ghost btn-block',
+      type: 'button',
+      text: t('backHome'),
+      onClick: () => {
+        uiPhase = 'home'
+        paint()
+      },
+    }),
   )
 
   return screen
@@ -1772,6 +1985,11 @@ function finishPlacementAndNotify(placeFor: PlayerId) {
     paint()
     return
   }
+  if (engine.mode === 'vs-ai') {
+    uiPhase = engine.phase === 'battle' ? 'battle' : 'placement'
+    paint()
+    return
+  }
   socket.send({
     type: 'placement',
     player: placeFor,
@@ -1787,7 +2005,8 @@ function finishPlacementAndNotify(placeFor: PlayerId) {
 }
 
 function placementScreen(): HTMLElement {
-  const placeFor = myOnlineRole ?? engine.placingPlayer
+  const placeFor =
+    engine.mode === 'vs-ai' ? 'p1' : (myOnlineRole ?? engine.placingPlayer)
   const p = engine.player(placeFor)
   const fleetFull = p.planes.length >= engine.planesPerPlayer
   const canPlaceMore = p.planes.length < engine.planesPerPlayer
@@ -2034,9 +2253,13 @@ function placementScreen(): HTMLElement {
 
 function battleScreen(): HTMLElement {
   // Always prefer online role so "own fleet" never flips to the opponent's board
-  const me = myOnlineRole ?? (engine.mode === 'online-join' ? 'p2' : 'p1')
+  const me =
+    engine.mode === 'vs-ai'
+      ? 'p1'
+      : (myOnlineRole ?? (engine.mode === 'online-join' ? 'p2' : 'p1'))
   const myPlayer = engine.player(me)
   const isMyTurn = engine.currentPlayer === me
+  const vsAi = engine.mode === 'vs-ai'
 
   const bannerClass =
     engine.lastShot?.kind === 'hit'
@@ -2053,7 +2276,14 @@ function battleScreen(): HTMLElement {
 
   const turnMsg = isMyTurn
     ? engine.message || t('yourTurnAttack')
-    : t('waitPlayer', { name: engine.player(engine.currentPlayer).name })
+    : vsAi
+      ? t('aiThinking')
+      : t('waitPlayer', { name: engine.player(engine.currentPlayer).name })
+
+  // If it's the computer's turn when the battle view mounts, shoot soon
+  if (vsAi && !isMyTurn && engine.phase === 'battle' && !engine.winner) {
+    queueMicrotask(() => scheduleAiTurn())
+  }
 
   return el('div', { className: 'screen', 'data-screen': 'battle' }, [
     el('div', { className: 'battle-top' }, [
@@ -2063,7 +2293,9 @@ function battleScreen(): HTMLElement {
           style: `background:${engine.player(engine.currentPlayer).color}`,
         }),
         el('span', {
-          text: isMyTurn ? t('yourTurn') : t('turnOf', { name: engine.player(engine.currentPlayer).name }),
+          text: isMyTurn
+            ? t('yourTurn')
+            : t('turnOf', { name: engine.player(engine.currentPlayer).name }),
         }),
       ]),
       el('span', {
@@ -2086,7 +2318,7 @@ function battleScreen(): HTMLElement {
           const result = engine.fire(coord, me, { silent: true })
           playShotFx(result, cellEl)
           if (result.kind === 'already') return
-          socket.send({ type: 'shot', player: me, coord })
+          if (!vsAi) socket.send({ type: 'shot', player: me, coord })
           // fire() may set winner / phase; prefer winner flag (avoids TS phase narrowing)
           if (engine.winner) {
             uiPhase = 'game-over'
@@ -2094,6 +2326,7 @@ function battleScreen(): HTMLElement {
             void maybeReportMatch()
           } else {
             softRefreshBattle(coord)
+            if (vsAi) scheduleAiTurn()
           }
         },
       }).wrap,
@@ -2124,15 +2357,15 @@ function battleScreen(): HTMLElement {
             }
             softRefreshBattle()
           }
-          socket.send({ type: 'radar', player: me })
+          if (!vsAi) socket.send({ type: 'radar', player: me })
         },
       }),
       el('button', {
         className: 'btn btn-ghost',
         'data-action': 'home-keep',
-        text: t('keepAndHome'),
+        text: vsAi ? t('backHome') : t('keepAndHome'),
         onClick: () => {
-          void goHome({ leaveCurrent: false })
+          void goHome({ leaveCurrent: true })
         },
       }),
     ]),
@@ -2161,7 +2394,7 @@ function gameOverScreen(): HTMLElement {
           el('div', { className: 'l', text: t('turns') }),
         ]),
         el('div', { className: 'stat' }, [
-          el('div', { className: 'n', text: '3' }),
+          el('div', { className: 'n', text: String(engine.planesPerPlayer) }),
           el('div', { className: 'l', text: t('planesDown') }),
         ]),
       ]),
@@ -2172,7 +2405,11 @@ function gameOverScreen(): HTMLElement {
           text: t('rematch'),
           onClick: () => {
             matchReported = false
-            if (engine.mode !== 'local') socket.send({ type: 'rematch' })
+            cancelAiTurn()
+            if (engine.mode === 'online-host' || engine.mode === 'online-join') {
+              socket.send({ type: 'rematch' })
+            }
+            if (engine.mode === 'vs-ai') aiOpponent.reset()
             engine.rematch()
             uiPhase = 'placement'
             paint()
@@ -2523,12 +2760,18 @@ function softRefreshBattle(flashCoord?: Coord) {
     return
   }
 
-  const me = myOnlineRole ?? (engine.mode === 'online-join' ? 'p2' : 'p1')
+  const me =
+    engine.mode === 'vs-ai'
+      ? 'p1'
+      : (myOnlineRole ?? (engine.mode === 'online-join' ? 'p2' : 'p1'))
   const isMyTurn = engine.currentPlayer === me
+  const vsAi = engine.mode === 'vs-ai'
 
   const turnMsg = isMyTurn
     ? engine.message || t('yourTurnAttack')
-    : t('waitPlayer', { name: engine.player(engine.currentPlayer).name })
+    : vsAi
+      ? t('aiThinking')
+      : t('waitPlayer', { name: engine.player(engine.currentPlayer).name })
 
   const banner = screen.querySelector('.banner')
   if (banner) {

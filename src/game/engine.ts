@@ -188,6 +188,36 @@ export class GameEngine {
     this.emit()
   }
 
+  /** Solo match vs virtual opponent (human always p1). */
+  startVsAi(name: string) {
+    this.mode = 'vs-ai'
+    this.phase = 'placement'
+    this.placingPlayer = 'p1'
+    this.currentPlayer = 'p1'
+    this.winner = null
+    this.turn = 0
+    this.lastShot = null
+    this.lastRadar = []
+    this.p1 = emptyPlayer('p1', name.trim() || t('engineYou'), this.settings.planeColor)
+    this.p2 = emptyPlayer('p2', t('aiOpponentName'), COLORS.p2)
+    this.placeOrientation = 0
+    this.ghostHead = null
+    this.message = t('enginePlaceVsAi')
+    this.emit()
+  }
+
+  /** Auto-place AI fleet (p2) without leaving placement phase mid-call. */
+  placeAiFleet(): boolean {
+    const prevPlacing = this.placingPlayer
+    this.placingPlayer = 'p2'
+    // wipe any partial AI fleet
+    this.p2.planes = []
+    this.p2.fleet.clear()
+    const ok = this.autoPlaceRemaining()
+    this.placingPlayer = prevPlacing
+    return ok
+  }
+
   startOnlineHost(name: string) {
     this.mode = 'online-host'
     this.p1.name = name.trim() || 'Gazdă'
@@ -401,6 +431,21 @@ export class GameEngine {
   }
 
   private onPlacementComplete(silent = false) {
+    if (this.mode === 'vs-ai') {
+      // Human done → auto-place computer and start battle
+      if (!this.placeAiFleet()) {
+        this.message = t('engineNoSpace')
+        if (!silent) this.emit()
+        return
+      }
+      this.phase = 'battle'
+      this.currentPlayer = 'p1'
+      this.turn = 1
+      this.placingPlayer = 'p1'
+      this.message = t('engineBattleStart', { name: this.p1.name })
+      if (!silent) this.emit()
+      return
+    }
     if (this.mode === 'local') {
       if (this.placingPlayer === 'p1') {
         this.phase = 'pass-device'
@@ -549,6 +594,7 @@ export class GameEngine {
       this.turn++
       this.message = `${result.kind === 'miss' ? 'Apă' : result.kind === 'sunk' ? 'Avion doborât' : 'Lovit'}! Dă telefonul lui ${this.player(this.currentPlayer).name}`
     } else {
+      // online + vs-ai: immediate turn swap (no pass-device)
       this.currentPlayer = shooterId === 'p1' ? 'p2' : 'p1'
       this.turn++
       this.message = t('engineTurn', { name: this.player(this.currentPlayer).name })
@@ -636,6 +682,8 @@ export class GameEngine {
     this.ghostHead = null
     if (mode === 'local') {
       this.startLocal()
+    } else if (mode === 'vs-ai') {
+      this.startVsAi(names.p1)
     } else {
       this.mode = mode
       this.beginOnlinePlacement()

@@ -59,7 +59,7 @@ export type Phase =
   | 'battle'
   | 'game-over'
 
-export type GameMode = 'local' | 'online-host' | 'online-join'
+export type GameMode = 'local' | 'online-host' | 'online-join' | 'vs-ai'
 
 export interface GameSnapshot {
   phase: Phase
