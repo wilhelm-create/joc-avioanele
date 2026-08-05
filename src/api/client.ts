@@ -23,15 +23,10 @@ export async function register(
   password: string,
   email: string,
 ): Promise<RegisterPendingResponse> {
-  const data = await request<RegisterPendingResponse>('/api/auth/register', {
+  return request<RegisterPendingResponse>('/api/auth/register', {
     method: 'POST',
     body: JSON.stringify({ username, password, email }),
   })
-  // Auto-verified path (no Resend) — same session as login
-  if (data.token && data.user && 'emailVerified' in data.user) {
-    setSession(data.token, data.user as PublicUser)
-  }
-  return data
 }
 
 export async function login(username: string, password: string): Promise<AuthResponse> {

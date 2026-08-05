@@ -538,13 +538,12 @@ export async function verifyLogin(usernameOrEmail: string, password: string): Pr
   if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
     throw new Error('Username/email sau parolă greșită')
   }
-  // No Resend configured → cannot deliver inbox mail; do not trap users behind verify.
-  const emailDelivery = Boolean(process.env.RESEND_API_KEY)
-  if (!user.emailVerified && user.email && emailDelivery) {
+  // Email verification is required whenever the account has an email address
+  if (!user.emailVerified && user.email) {
     throw new Error('EMAIL_NOT_VERIFIED')
   }
-  // Auto-confirm: legacy accounts, or production without an email provider
-  if (!user.emailVerified) {
+  // Legacy accounts created before email was required — mark verified once
+  if (!user.email && !user.emailVerified) {
     const db = await loadStore()
     const u = db.users.find((x) => x.id === user!.id)
     if (u) {
@@ -560,8 +559,10 @@ export async function verifyLogin(usernameOrEmail: string, password: string): Pr
 
 export async function verifyEmailToken(tokenStr: string): Promise<PublicUser> {
   mem = null
+  const token = (tokenStr || '').trim()
+  if (!token) throw new Error('Link invalid sau expirat')
   const db = await loadStore()
-  const user = db.users.find((u) => u.emailVerifyToken === tokenStr)
+  const user = db.users.find((u) => (u.emailVerifyToken || '').trim() === token)
   if (!user) throw new Error('Link invalid sau expirat')
   if (!user.emailVerifyExpires || user.emailVerifyExpires < Date.now()) {
     throw new Error('Linkul de verificare a expirat')

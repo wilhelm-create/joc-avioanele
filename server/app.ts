@@ -20,7 +20,7 @@ import {
   setAvatar,
   type PublicUser,
 } from './db.js'
-import { sendVerifyEmail, sendPasswordResetEmail } from './email.js'
+import { sendVerifyEmail, sendPasswordResetEmail, isEmailConfigured } from './email.js'
 import {
   createRoom,
   joinRoom,
@@ -85,6 +85,10 @@ export function createApp() {
           service: 'avioane',
           platform: process.env.VERCEL ? 'vercel' : 'node',
           storage: storageMode(),
+          email: {
+            configured: isEmailConfigured(),
+            provider: isEmailConfigured() ? 'resend' : 'none',
+          },
           users,
         })
       })
@@ -94,6 +98,7 @@ export function createApp() {
           service: 'avioane',
           platform: process.env.VERCEL ? 'vercel' : 'node',
           storage: storageMode(),
+          email: { configured: isEmailConfigured(), provider: isEmailConfigured() ? 'resend' : 'none' },
           users: { error: 'unavailable' },
         })
       })
@@ -110,34 +115,38 @@ export function createApp() {
         res.status(400).json({ error: 'Username, email și parolă obligatorii' })
         return
       }
+      if (!isEmailConfigured() && process.env.EMAIL_ALLOW_LOG !== '1' && process.env.VERCEL) {
+        res.status(503).json({
+          error:
+            'Verificarea pe email nu e configurată pe server (lipsește RESEND_API_KEY). Adaug-o în Vercel Environment Variables.',
+          code: 'EMAIL_NOT_CONFIGURED',
+        })
+        return
+      }
       const { user, verifyToken } = await createUser(username, password, email)
       const mail = await sendVerifyEmail(user.email, user.username, verifyToken)
       if (!mail.ok) {
-        res.status(502).json({ error: 'Nu am putut trimite emailul de verificare' })
-        return
-      }
-
-      // No Resend API key → no real inbox. Auto-confirm so the user can play
-      // from any device without being stuck on a debug link.
-      if (mail.mode === 'log') {
-        const verified = await verifyEmailToken(verifyToken)
-        res.status(201).json({
-          ok: true,
-          needsVerification: false,
-          autoVerified: true,
-          user: verified,
-          token: signToken(verified),
-          message: 'Cont creat — poți juca imediat (email auto-confirmat pe server).',
+        const hint =
+          mail.error === 'EMAIL_NOT_CONFIGURED'
+            ? ' Configurează RESEND_API_KEY, EMAIL_FROM și PUBLIC_APP_URL pe Vercel.'
+            : ''
+        res.status(502).json({
+          error: 'Nu am putut trimite emailul de verificare.' + hint,
+          code: mail.error || 'EMAIL_SEND_FAILED',
         })
         return
       }
 
-      // Real email sent — must confirm from inbox before login
+      // Always require inbox (or debug link in local log mode) — never auto-login
       res.status(201).json({
         ok: true,
         needsVerification: true,
         user: { id: user.id, username: user.username, email: user.email },
-        message: 'Verifică emailul — ți-am trimis un link de confirmare',
+        message:
+          mail.mode === 'resend'
+            ? 'Verifică emailul — ți-am trimis un link de confirmare. Apoi revino și autentifică-te.'
+            : 'Mod dev: deschide linkul de confirmare de mai jos (emailul nu e livrat fără RESEND_API_KEY).',
+        // debug link only when email was logged (local/dev), never when real Resend succeeded
         ...(mail.debugLink ? { debugVerifyLink: mail.debugLink } : {}),
       })
     } catch (e) {

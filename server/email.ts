@@ -1,7 +1,13 @@
 /**
  * Transactional email via Resend (HTTPS API — works on Vercel serverless).
- * Env: RESEND_API_KEY, EMAIL_FROM, PUBLIC_APP_URL
- * Without RESEND_API_KEY, emails are logged (dev) and links returned for testing.
+ *
+ * Required for real inbox delivery (production):
+ *   RESEND_API_KEY   — from https://resend.com
+ *   EMAIL_FROM       — verified domain sender, e.g. "Avioane <noreply@yourdomain.com>"
+ *   PUBLIC_APP_URL   — https://joc-avioanele.vercel.app (no trailing slash)
+ *
+ * Dev-only without key: EMAIL_ALLOW_LOG=1 → log link to console + return debugLink.
+ * On Vercel/production, missing RESEND_API_KEY fails the send (no silent auto-verify).
  */
 
 export type MailResult = {
@@ -12,11 +18,31 @@ export type MailResult = {
   error?: string
 }
 
+export function isEmailConfigured(): boolean {
+  return Boolean(process.env.RESEND_API_KEY?.trim())
+}
+
+function isProductionLike(): boolean {
+  return Boolean(
+    process.env.VERCEL ||
+      process.env.NODE_ENV === 'production' ||
+      process.env.REQUIRE_EMAIL_VERIFICATION === '1',
+  )
+}
+
+/** Allow console/debug links only outside production-like hosts, or with explicit flag. */
+function allowLogMode(): boolean {
+  if (process.env.EMAIL_ALLOW_LOG === '1') return true
+  if (process.env.EMAIL_ALLOW_LOG === '0') return false
+  return !isProductionLike()
+}
+
 function appUrl(): string {
   return (process.env.PUBLIC_APP_URL || 'https://joc-avioanele.vercel.app').replace(/\/$/, '')
 }
 
 function fromAddress(): string {
+  // Resend test sender works only for the account owner email until a domain is verified
   return process.env.EMAIL_FROM || 'Avioane <onboarding@resend.dev>'
 }
 
@@ -35,8 +61,12 @@ export function isValidEmailFormat(email: string): boolean {
 }
 
 async function sendResend(to: string, subject: string, html: string, text: string): Promise<MailResult> {
-  const key = process.env.RESEND_API_KEY
+  const key = process.env.RESEND_API_KEY?.trim()
   if (!key) {
+    if (!allowLogMode()) {
+      console.error('RESEND_API_KEY missing — cannot send email in production')
+      return { ok: false, mode: 'resend', error: 'EMAIL_NOT_CONFIGURED' }
+    }
     console.info('[email:log]', { to, subject, text })
     return { ok: true, mode: 'log' }
   }

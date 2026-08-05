@@ -1090,29 +1090,10 @@ function authScreen(): HTMLElement {
             const res = await register(authUserDraft.trim(), authPassDraft, authEmailDraft.trim())
             authBusy = false
             authPassDraft = ''
-            // No email provider / auto-verified → go straight home
-            if (res.token && res.user && 'emailVerified' in res.user) {
-              currentUser = res.user as import('../auth/types').PublicUser
-              if (pendingInviteCode) await acceptPendingInvite()
-              else {
-                uiPhase = 'home'
-                try {
-                  await socket.connect()
-                  await refreshActiveGames()
-                } catch {
-                  /* */
-                }
-                paint()
-              }
-              return
-            }
+            // Always wait for email confirmation (no auto-login)
             authMode = 'login'
-            authNote = res.message
-            // Clickable confirm control when only a debug link is available
-            if (res.debugVerifyLink) {
-              authNote = res.message
-              pendingVerifyUrl = res.debugVerifyLink
-            }
+            authNote = res.message || t('checkInboxToVerify')
+            pendingVerifyUrl = res.debugVerifyLink || ''
             paint()
             return
           }
@@ -1146,6 +1127,8 @@ function authScreen(): HTMLElement {
           if (err.code === 'EMAIL_NOT_VERIFIED' || err.message === 'EMAIL_NOT_VERIFIED') {
             authError = t('emailNotVerified')
             authNote = 'NEED_RESEND'
+          } else if (err.code === 'EMAIL_NOT_CONFIGURED' || /RESEND_API_KEY/i.test(err.message)) {
+            authError = t('emailNotConfigured')
           } else {
             authError = err.message
           }

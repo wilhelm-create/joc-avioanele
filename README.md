@@ -23,7 +23,33 @@ npm run dev
 Deschide **http://localhost:5173**  
 API: **http://localhost:3000** (proxy Vite: `/api`). Multiplayer online folosește HTTP polling (compatibil Vercel).
 
-Copiază `.env.example` → `.env` și setează un `JWT_SECRET` propriu pentru producție.
+Copiază `.env.example` → `.env` și completează variabilele.
+
+## Verificare email (obligatorie)
+
+Conturile **nu** se activează până deschizi linkul din inbox.
+
+| Variabilă | Rol |
+|-----------|-----|
+| `RESEND_API_KEY` | Cheie API [Resend](https://resend.com) — **obligatorie pe Vercel** |
+| `EMAIL_FROM` | Expeditor verificat, ex. `Avioane <noreply@domeniul-tau.com>` |
+| `PUBLIC_APP_URL` | URL-ul site-ului, ex. `https://joc-avioanele.vercel.app` |
+
+Pași rapizi:
+1. Cont pe [resend.com](https://resend.com) → **API Keys** → creezi cheie
+2. **Domains** → adaugi și verifici domeniul (DNS)
+3. Pe Vercel → **Settings → Environment Variables** (Production):
+   - `RESEND_API_KEY`
+   - `EMAIL_FROM`
+   - `PUBLIC_APP_URL`
+   - `JWT_SECRET`
+   - `BLOB_READ_WRITE_TOKEN`
+4. Redeploy
+
+Fără `RESEND_API_KEY` pe producție, înregistrarea **eșuează** (nu mai există auto-confirmare).  
+Local, poți seta `EMAIL_ALLOW_LOG=1` ca să vezi linkul de test în UI/console.
+
+`/api/health` → `email.configured: true` când Resend e setat.
 
 ## Deploy
 
@@ -31,7 +57,7 @@ Copiază `.env.example` → `.env` și setează un `JWT_SECRET` propriu pentru p
 ```bash
 npx vercel --prod
 ```
-Setează env `JWT_SECRET` în dashboard Vercel (Production).
+Setează pe Vercel toate variabilele din `.env.example` (Production).
 
 ### Node self-host
 ```bash
