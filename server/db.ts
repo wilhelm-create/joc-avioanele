@@ -538,15 +538,19 @@ export async function verifyLogin(usernameOrEmail: string, password: string): Pr
   if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
     throw new Error('Username/email sau parolă greșită')
   }
-  if (!user.emailVerified && user.email) {
+  // No Resend configured → cannot deliver inbox mail; do not trap users behind verify.
+  const emailDelivery = Boolean(process.env.RESEND_API_KEY)
+  if (!user.emailVerified && user.email && emailDelivery) {
     throw new Error('EMAIL_NOT_VERIFIED')
   }
-  // Legacy users without email: mark verified and persist
-  if (!user.email && !user.emailVerified) {
+  // Auto-confirm: legacy accounts, or production without an email provider
+  if (!user.emailVerified) {
     const db = await loadStore()
-    const u = db.users.find((x) => x.id === user.id)
+    const u = db.users.find((x) => x.id === user!.id)
     if (u) {
       u.emailVerified = true
+      u.emailVerifyToken = null
+      u.emailVerifyExpires = null
       await saveStore(db)
       return publicUser(u)
     }

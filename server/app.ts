@@ -116,13 +116,28 @@ export function createApp() {
         res.status(502).json({ error: 'Nu am putut trimite emailul de verificare' })
         return
       }
-      // No token until email confirmed
+
+      // No Resend API key → no real inbox. Auto-confirm so the user can play
+      // from any device without being stuck on a debug link.
+      if (mail.mode === 'log') {
+        const verified = await verifyEmailToken(verifyToken)
+        res.status(201).json({
+          ok: true,
+          needsVerification: false,
+          autoVerified: true,
+          user: verified,
+          token: signToken(verified),
+          message: 'Cont creat — poți juca imediat (email auto-confirmat pe server).',
+        })
+        return
+      }
+
+      // Real email sent — must confirm from inbox before login
       res.status(201).json({
         ok: true,
         needsVerification: true,
         user: { id: user.id, username: user.username, email: user.email },
         message: 'Verifică emailul — ți-am trimis un link de confirmare',
-        // only when Resend is not configured (local/dev)
         ...(mail.debugLink ? { debugVerifyLink: mail.debugLink } : {}),
       })
     } catch (e) {

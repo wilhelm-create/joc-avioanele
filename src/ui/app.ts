@@ -77,6 +77,8 @@ let currentUser: PublicUser | null = null
 let authMode: 'login' | 'register' | 'forgot' | 'reset' = 'login'
 let authError = ''
 let authNote = ''
+/** Full verify URL from registration/resend when email is not actually delivered */
+let pendingVerifyUrl = ''
 let authBusy = false
 let authUserDraft = ''
 let authPassDraft = ''
@@ -283,13 +285,13 @@ export async function mountApp(root: HTMLElement) {
   paint()
 
   if (verifyTok) {
+    // Always strip ?verify= so a dead link doesn't loop the error on every refresh
+    urlParams.delete('verify')
+    const qClean = urlParams.toString()
+    history.replaceState({}, '', `${location.pathname}${qClean ? `?${qClean}` : ''}${location.hash}`)
     try {
       const res = await verifyEmail(verifyTok)
       currentUser = res.user
-      // strip verify from URL
-      urlParams.delete('verify')
-      const q = urlParams.toString()
-      history.replaceState({}, '', `${location.pathname}${q ? `?${q}` : ''}${location.hash}`)
       if (pendingInviteCode) await acceptPendingInvite()
       else {
         uiPhase = 'home'
@@ -302,8 +304,10 @@ export async function mountApp(root: HTMLElement) {
         paint()
       }
       return
-    } catch (e) {
-      authError = (e as Error).message
+    } catch {
+      // Token lost/expired (common after store rebuild). Login with password instead.
+      authError = ''
+      authNote = t('verifyLinkDead')
       authMode = 'login'
       uiPhase = 'auth'
       paint()
@@ -994,6 +998,50 @@ function authScreen(): HTMLElement {
   if (authNote && authNote !== 'NEED_RESEND') {
     card.appendChild(el('div', { className: 'banner', text: authNote }))
   }
+  if (pendingVerifyUrl) {
+    card.appendChild(
+      el('a', {
+        className: 'btn btn-sky btn-block',
+        href: pendingVerifyUrl,
+        text: t('confirmEmailNow'),
+        style: 'text-align:center;text-decoration:none;display:flex;align-items:center;justify-content:center',
+      }),
+    )
+    card.appendChild(
+      el('button', {
+        className: 'btn btn-ghost btn-block',
+        type: 'button',
+        text: t('confirmEmailInline'),
+        onClick: async () => {
+          try {
+            const u = new URL(pendingVerifyUrl, location.origin)
+            const tok = u.searchParams.get('verify')
+            if (!tok) throw new Error(t('resetTokenMissing'))
+            authBusy = true
+            paint()
+            const res = await verifyEmail(tok)
+            currentUser = res.user
+            pendingVerifyUrl = ''
+            authNote = ''
+            authError = ''
+            authBusy = false
+            uiPhase = 'home'
+            try {
+              await socket.connect()
+              await refreshActiveGames()
+            } catch {
+              /* */
+            }
+            paint()
+          } catch (e) {
+            authBusy = false
+            authError = (e as Error).message
+            paint()
+          }
+        },
+      }),
+    )
+  }
 
   const submitLabel =
     authMode === 'login'
@@ -1042,8 +1090,29 @@ function authScreen(): HTMLElement {
             const res = await register(authUserDraft.trim(), authPassDraft, authEmailDraft.trim())
             authBusy = false
             authPassDraft = ''
-            authNote = res.message + (res.debugVerifyLink ? `\n${res.debugVerifyLink}` : '')
+            // No email provider / auto-verified → go straight home
+            if (res.token && res.user && 'emailVerified' in res.user) {
+              currentUser = res.user as import('../auth/types').PublicUser
+              if (pendingInviteCode) await acceptPendingInvite()
+              else {
+                uiPhase = 'home'
+                try {
+                  await socket.connect()
+                  await refreshActiveGames()
+                } catch {
+                  /* */
+                }
+                paint()
+              }
+              return
+            }
             authMode = 'login'
+            authNote = res.message
+            // Clickable confirm control when only a debug link is available
+            if (res.debugVerifyLink) {
+              authNote = res.message
+              pendingVerifyUrl = res.debugVerifyLink
+            }
             paint()
             return
           }
@@ -1109,7 +1178,8 @@ function authScreen(): HTMLElement {
           onClick: async () => {
             try {
               const res = await resendVerification(authUserDraft.trim() || authEmailDraft.trim())
-              authNote = res.message + (res.debugVerifyLink ? `\n${res.debugVerifyLink}` : '')
+              authNote = res.message
+              pendingVerifyUrl = res.debugVerifyLink || ''
               authError = ''
               paint()
             } catch (e) {

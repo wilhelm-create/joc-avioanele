@@ -45,6 +45,10 @@ export const locales: Record<Lang, Dict> = {
     emailNotVerifiedShort: 'Email neconfirmat — verifică inbox-ul',
     emailVerifiedOk: 'Email confirmat ✓',
     resendVerify: 'Retrimite email de verificare',
+    confirmEmailNow: '✉ Deschide linkul de confirmare',
+    confirmEmailInline: '✓ Confirmă emailul aici (fără inbox)',
+    verifyLinkDead:
+      'Linkul de confirmare a expirat sau nu mai e valid. Autentifică-te cu username + parolă — contul se activează la login.',
     processing: 'Se procesează…',
     inviteBanner: 'Ai fost invitat în camera {code}. Autentifică-te ca să intri.',
     yourAccount: 'Contul tău',
@@ -276,6 +280,10 @@ export const locales: Record<Lang, Dict> = {
     emailNotVerifiedShort: 'Email not verified — check your inbox',
     emailVerifiedOk: 'Email verified ✓',
     resendVerify: 'Resend verification email',
+    confirmEmailNow: '✉ Open confirmation link',
+    confirmEmailInline: '✓ Confirm email here (no inbox)',
+    verifyLinkDead:
+      'That confirmation link expired or is no longer valid. Sign in with username + password — the account activates on login.',
     processing: 'Working…',
     inviteBanner: 'You were invited to room {code}. Sign in to join.',
     yourAccount: 'Your account',

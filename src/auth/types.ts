@@ -17,8 +17,11 @@ export interface AuthResponse {
 
 export interface RegisterPendingResponse {
   ok: true
-  needsVerification: true
-  user: { id: string; username: string; email: string }
+  needsVerification: boolean
+  autoVerified?: boolean
+  user: PublicUser | { id: string; username: string; email: string }
   message: string
+  /** Present when account is ready immediately (e.g. no email provider). */
+  token?: string
   debugVerifyLink?: string
 }
