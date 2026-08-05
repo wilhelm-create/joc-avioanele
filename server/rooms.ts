@@ -4,6 +4,7 @@
  */
 
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { del, get, put } from '@vercel/blob'
@@ -89,7 +90,18 @@ interface RoomJSON {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const LOCAL_DIR = path.join(__dirname, '..', 'data', 'rooms')
+
+/** Server cache only; multiplayer rooms for any device live on Vercel Blob. */
+function resolveRoomsDir(): string {
+  if (process.env.ROOMS_DATA_DIR) return process.env.ROOMS_DATA_DIR
+  const serverless = Boolean(
+    process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.K_SERVICE,
+  )
+  if (serverless) return path.join(os.tmpdir(), 'avioane-data', 'rooms')
+  return path.join(__dirname, '..', 'data', 'rooms')
+}
+
+const LOCAL_DIR = resolveRoomsDir()
 const MAX_AGE_MS = 4 * 60 * 60 * 1000 // 4h invite window
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
@@ -186,8 +198,13 @@ function readLocalJson<T>(file: string): T | null {
 }
 
 function writeLocalJson(file: string, data: unknown) {
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, JSON.stringify(data), 'utf8')
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify(data), 'utf8')
+  } catch (e) {
+    // Vercel deploy dir is read-only; /tmp may still work. Never crash the room API.
+    console.error('local room write failed', e instanceof Error ? e.message : e)
+  }
 }
 
 function deleteLocal(file: string) {

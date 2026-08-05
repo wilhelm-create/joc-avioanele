@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import bcrypt from 'bcryptjs'
@@ -6,10 +7,31 @@ import { get, put } from '@vercel/blob'
 import { isValidEmailFormat } from './email.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const LOCAL_DIR = path.join(__dirname, '..', 'data')
+
+/**
+ * Server-side cache/backup only — NOT on the player's phone.
+ * Accounts live in Vercel Blob so the same username/password works from any device.
+ * On Vercel/Lambda the deploy dir is read-only → use /tmp for any disk mirror.
+ */
+function isServerlessRuntime(): boolean {
+  return Boolean(
+    process.env.VERCEL ||
+      process.env.AWS_LAMBDA_FUNCTION_NAME ||
+      process.env.FUNCTION_NAME ||
+      process.env.K_SERVICE,
+  )
+}
+
+function resolveLocalDataDir(): string {
+  if (process.env.USERS_DATA_DIR) return process.env.USERS_DATA_DIR
+  if (isServerlessRuntime()) return path.join(os.tmpdir(), 'avioane-data')
+  return path.join(__dirname, '..', 'data')
+}
+
+const LOCAL_DIR = resolveLocalDataDir()
 const LOCAL_FILE = path.join(LOCAL_DIR, 'users.json')
 const LOCAL_BACKUP_DIR = path.join(LOCAL_DIR, 'users.backups')
-/** Primary blob + durable mirror so a blocked/failed primary can still recover. */
+/** Cloud source of truth (any device / any location). */
 const BLOB_PATH = 'avioane-users.json'
 const BLOB_BACKUP_PATH = 'avioane-users.backup.json'
 const MAX_LOCAL_BACKUPS = 30
@@ -179,9 +201,16 @@ function withMeta(db: DbShape): DbShape {
   }
 }
 
-function ensureLocalDirs() {
-  if (!fs.existsSync(LOCAL_DIR)) fs.mkdirSync(LOCAL_DIR, { recursive: true })
-  if (!fs.existsSync(LOCAL_BACKUP_DIR)) fs.mkdirSync(LOCAL_BACKUP_DIR, { recursive: true })
+/** Local disk is optional cache. Never throw — cloud Blob is the multi-device source of truth. */
+function ensureLocalDirs(): boolean {
+  try {
+    if (!fs.existsSync(LOCAL_DIR)) fs.mkdirSync(LOCAL_DIR, { recursive: true })
+    if (!fs.existsSync(LOCAL_BACKUP_DIR)) fs.mkdirSync(LOCAL_BACKUP_DIR, { recursive: true })
+    return true
+  } catch (e) {
+    console.error('local data dir unavailable (ok on some hosts)', e instanceof Error ? e.message : e)
+    return false
+  }
 }
 
 function loadLocalFile(filePath: string): DbShape {
@@ -194,17 +223,17 @@ function loadLocalFile(filePath: string): DbShape {
 }
 
 function loadLocal(): DbShape {
-  ensureLocalDirs()
-  if (!fs.existsSync(LOCAL_FILE)) {
-    // Do NOT write empty on first missing file when we might still recover from blob/backups
+  try {
+    if (!fs.existsSync(LOCAL_FILE)) return empty()
+    return loadLocalFile(LOCAL_FILE)
+  } catch {
     return empty()
   }
-  return loadLocalFile(LOCAL_FILE)
 }
 
 function listLocalBackupFiles(): string[] {
-  ensureLocalDirs()
   try {
+    if (!fs.existsSync(LOCAL_BACKUP_DIR)) return []
     return fs
       .readdirSync(LOCAL_BACKUP_DIR)
       .filter((f) => f.startsWith('users-') && f.endsWith('.json'))
@@ -225,7 +254,7 @@ function loadRecentLocalBackups(limit = 5): DbShape[] {
 
 function rotateLocalBackup(db: DbShape) {
   if (!db.users.length) return
-  ensureLocalDirs()
+  if (!ensureLocalDirs()) return
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const dest = path.join(LOCAL_BACKUP_DIR, `users-${stamp}.json`)
   try {
@@ -239,17 +268,22 @@ function rotateLocalBackup(db: DbShape) {
       }
     }
   } catch (e) {
-    console.error('local backup rotate failed', e)
+    console.error('local backup rotate failed', e instanceof Error ? e.message : e)
   }
 }
 
-function saveLocal(db: DbShape) {
-  ensureLocalDirs()
-  const payload = withMeta(db)
-  // Atomic-ish write: temp + rename
-  const tmp = `${LOCAL_FILE}.${process.pid}.tmp`
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), 'utf8')
-  fs.renameSync(tmp, LOCAL_FILE)
+function saveLocal(db: DbShape): boolean {
+  if (!ensureLocalDirs()) return false
+  try {
+    const payload = withMeta(db)
+    const tmp = `${LOCAL_FILE}.${process.pid}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), 'utf8')
+    fs.renameSync(tmp, LOCAL_FILE)
+    return true
+  } catch (e) {
+    console.error('local users save failed', e instanceof Error ? e.message : e)
+    return false
+  }
 }
 
 async function loadBlobPath(pathname: string): Promise<DbShape> {
@@ -383,35 +417,43 @@ async function saveStore(db: DbShape) {
   if (snapshot.users.length > peakUserCount) peakUserCount = snapshot.users.length
   assertSafeToSave(snapshot)
 
-  // 1) Local rotating backup of previous main file
+  // 1) Optional local cache/backup (never required for multi-device play)
   const previous = loadLocal()
   if (previous.users.length) rotateLocalBackup(previous)
+  const localOk = saveLocal(snapshot)
+  if (localOk) rotateLocalBackup(snapshot)
 
-  // 2) Always write local first (survives blob outages on long-running hosts)
-  saveLocal(snapshot)
-  rotateLocalBackup(snapshot)
-
-  // 3) Dual-write to blob primary + backup when configured
+  // 2) Cloud dual-write — this is what makes the same account work on any device
+  let blobOk = !useBlob()
   if (useBlob()) {
     try {
       await putBlobPath(BLOB_PATH, snapshot)
       await putBlobPath(BLOB_BACKUP_PATH, snapshot)
       lastBlobOk = true
       lastBlobError = ''
+      blobOk = true
     } catch (e) {
       lastBlobOk = false
       lastBlobError = e instanceof Error ? e.message.slice(0, 200) : String(e)
-      console.error(
-        'blob save failed — local users.json kept (%d accounts)',
-        snapshot.users.length,
-        lastBlobError,
-      )
-      // Do not throw: registration/login must succeed if local persisted.
+      console.error('blob save failed', lastBlobError)
+      blobOk = false
     }
   }
 
+  if (!blobOk && !localOk) {
+    throw new Error(
+      'Nu am putut salva conturile (nici cloud, nici cache). Verifică BLOB_READ_WRITE_TOKEN pe Vercel.',
+    )
+  }
+  if (!blobOk && localOk && useBlob()) {
+    // Degraded: only server cache — other devices may not see this write until blob works
+    console.error(
+      'WARN: users saved only to server cache (%d) — fix Blob for multi-device',
+      snapshot.users.length,
+    )
+  }
+
   mem = snapshot
-  // keep caller's in-memory db array in sync if they hold the same reference
   db.users = snapshot.users
   memAt = Date.now()
   lastSaveAt = new Date().toISOString()

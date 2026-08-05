@@ -54,14 +54,16 @@ src/        UI + motor joc
 data/       users.json + users.backups/ (local, în .gitignore)
 ```
 
-## Conturi utilizatori (durabilitate)
+## Conturi utilizatori (orice device)
 
-Conturile (username + hash parolă) se salvează **dual**:
+**„Local” nu înseamnă pe telefonul jucătorului.** E doar un cache/backup pe mașina serverului.
 
-1. **Local** — `data/users.json` + snapshot-uri rotative în `data/users.backups/`
-2. **Vercel Blob** (dacă există `BLOB_READ_WRITE_TOKEN`) — `avioane-users.json` **și** oglindă `avioane-users.backup.json`
+| Unde | Rol |
+|------|-----|
+| **Vercel Blob** (`BLOB_READ_WRITE_TOKEN`) | **Sursa adevărului** — același cont de pe PC, telefon, altă locație |
+| Cache pe server (`data/` local sau `/tmp` pe Vercel) | Rezervă dacă Blob e temporar down; **nu** e legat de un device |
 
-La citire, sursele se **unesc** (blob principal, backup blob, fișier local, backup-uri locale).  
-Salvările care ar **goli** sau ar **reduce drastic** lista de conturi sunt **refuzate**.
+Ca să joci de pe alt device: deschizi același site, te autentifici cu **același username + parolă**. Nu trebuie instalat nimic pe device.
 
-`/api/health` raportează `users.userCount` și starea blob (fără secrete).
+Pe Vercel: `BLOB_READ_WRITE_TOKEN` e **obligatoriu** (filesystem-ul deploy-ului e read-only).  
+Salvările care ar goli lista de conturi sunt refuzate. `/api/health` arată `users.userCount` + `blobOk`.
