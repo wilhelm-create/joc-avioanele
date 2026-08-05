@@ -11,7 +11,7 @@
     "start": "cross-env NODE_ENV=production tsx server/index.ts",
     "preview": "vite preview",
     "test": "npm run test:engine && npm run test:e2e",
-    "test:engine": "npx tsx src/game/engine.test.ts",
+    "test:engine": "npx tsx src/game/engine.test.ts && npx tsx server/db.durability.test.ts",
     "test:e2e": "playwright test",
     "test:usability": "playwright test tests/usability.spec.ts"
   },

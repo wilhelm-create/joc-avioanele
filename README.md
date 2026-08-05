@@ -51,5 +51,17 @@ npm test
 ```
 server/     API auth, camere, WebSocket
 src/        UI + motor joc
-data/       users.json (generat local, în .gitignore)
+data/       users.json + users.backups/ (local, în .gitignore)
 ```
+
+## Conturi utilizatori (durabilitate)
+
+Conturile (username + hash parolă) se salvează **dual**:
+
+1. **Local** — `data/users.json` + snapshot-uri rotative în `data/users.backups/`
+2. **Vercel Blob** (dacă există `BLOB_READ_WRITE_TOKEN`) — `avioane-users.json` **și** oglindă `avioane-users.backup.json`
+
+La citire, sursele se **unesc** (blob principal, backup blob, fișier local, backup-uri locale).  
+Salvările care ar **goli** sau ar **reduce drastic** lista de conturi sunt **refuzate**.
+
+`/api/health` raportează `users.userCount` și starea blob (fără secrete).

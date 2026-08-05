@@ -10,6 +10,7 @@ import {
   listLeaderboard,
   recordMatch,
   storageMode,
+  usersStorageHealth,
   verifyEmailToken,
   resendVerification,
   requestPasswordReset,
@@ -77,12 +78,25 @@ export function createApp() {
   }
 
   app.get('/api/health', (_req, res) => {
-    res.json({
-      ok: true,
-      service: 'avioane',
-      platform: process.env.VERCEL ? 'vercel' : 'node',
-      storage: storageMode(),
-    })
+    void usersStorageHealth()
+      .then((users) => {
+        res.json({
+          ok: true,
+          service: 'avioane',
+          platform: process.env.VERCEL ? 'vercel' : 'node',
+          storage: storageMode(),
+          users,
+        })
+      })
+      .catch(() => {
+        res.json({
+          ok: true,
+          service: 'avioane',
+          platform: process.env.VERCEL ? 'vercel' : 'node',
+          storage: storageMode(),
+          users: { error: 'unavailable' },
+        })
+      })
   })
 
   app.post('/api/auth/register', async (req, res) => {

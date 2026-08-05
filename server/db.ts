@@ -8,7 +8,13 @@ import { isValidEmailFormat } from './email.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const LOCAL_DIR = path.join(__dirname, '..', 'data')
 const LOCAL_FILE = path.join(LOCAL_DIR, 'users.json')
+const LOCAL_BACKUP_DIR = path.join(LOCAL_DIR, 'users.backups')
+/** Primary blob + durable mirror so a blocked/failed primary can still recover. */
 const BLOB_PATH = 'avioane-users.json'
+const BLOB_BACKUP_PATH = 'avioane-users.backup.json'
+const MAX_LOCAL_BACKUPS = 30
+/** Refuse writing a store that drops more than this fraction of known accounts. */
+const MAX_SHRINK_RATIO = 0.5
 
 export interface UserRecord {
   id: string
@@ -30,6 +36,11 @@ export interface UserRecord {
 
 interface DbShape {
   users: UserRecord[]
+  /** Optional durability metadata (ignored by older readers). */
+  meta?: {
+    savedAt?: string
+    userCount?: number
+  }
 }
 
 export type PublicUser = {
@@ -77,49 +88,188 @@ const useBlob = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN)
 let mem: DbShape | null = null
 let memAt = 0
 const CACHE_MS = 2000
+/** Highest non-empty user count seen this process — blocks accidental wipe. */
+let peakUserCount = 0
+let lastBlobOk = true
+let lastBlobError = ''
+let lastSaveAt = ''
+let healInFlight = false
 
 function empty(): DbShape {
   return { users: [] }
 }
 
-function loadLocal(): DbShape {
-  if (!fs.existsSync(LOCAL_DIR)) fs.mkdirSync(LOCAL_DIR, { recursive: true })
-  if (!fs.existsSync(LOCAL_FILE)) {
-    const e = empty()
-    fs.writeFileSync(LOCAL_FILE, JSON.stringify(e, null, 2), 'utf8')
-    return e
-  }
+function parseDb(raw: string): DbShape {
+  if (!raw || !raw.trim()) return empty()
   try {
-    return JSON.parse(fs.readFileSync(LOCAL_FILE, 'utf8')) as DbShape
+    const data = JSON.parse(raw) as DbShape
+    if (!data || !Array.isArray(data.users)) return empty()
+    return {
+      users: data.users.map((u) => normalizeUser(u as UserRecord)),
+      meta: data.meta,
+    }
   } catch {
     return empty()
   }
 }
 
-function saveLocal(db: DbShape) {
-  if (!fs.existsSync(LOCAL_DIR)) fs.mkdirSync(LOCAL_DIR, { recursive: true })
-  fs.writeFileSync(LOCAL_FILE, JSON.stringify(db, null, 2), 'utf8')
+function userRichness(u: UserRecord): number {
+  return (
+    (u.passwordHash ? 100 : 0) +
+    (u.email ? 20 : 0) +
+    (u.emailVerified ? 10 : 0) +
+    (u.avatarDataUrl ? 5 : 0) +
+    (u.wins || 0) * 3 +
+    (u.gamesPlayed || 0) +
+    (u.losses || 0)
+  )
 }
 
-async function loadBlob(): Promise<DbShape> {
+/** Prefer the more complete / progressed account when merging duplicates by id. */
+function pickRicher(a: UserRecord, b: UserRecord): UserRecord {
+  const sa = userRichness(a)
+  const sb = userRichness(b)
+  if (sb > sa) return b
+  if (sa > sb) return a
+  // tie: keep password from whichever has one; prefer later createdAt
+  const aTime = Date.parse(a.createdAt || '') || 0
+  const bTime = Date.parse(b.createdAt || '') || 0
+  return bTime >= aTime ? b : a
+}
+
+export function mergeUserLists(lists: UserRecord[][]): UserRecord[] {
+  const byId = new Map<string, UserRecord>()
+  const byName = new Map<string, string>() // username lower → id
+
+  for (const list of lists) {
+    for (const raw of list) {
+      if (!raw || !raw.id || !raw.username) continue
+      const u = normalizeUser(raw)
+      const prev = byId.get(u.id)
+      const chosen = prev ? pickRicher(prev, u) : u
+      byId.set(u.id, chosen)
+
+      const nameKey = chosen.username.toLowerCase()
+      const existingId = byName.get(nameKey)
+      if (!existingId) {
+        byName.set(nameKey, chosen.id)
+      } else if (existingId !== chosen.id) {
+        // Same username, different ids — keep richer, drop the weaker id
+        const other = byId.get(existingId)
+        if (other) {
+          const winner = pickRicher(other, chosen)
+          const loserId = winner.id === chosen.id ? existingId : chosen.id
+          byId.delete(loserId)
+          byId.set(winner.id, winner)
+          byName.set(nameKey, winner.id)
+        }
+      }
+    }
+  }
+  return [...byId.values()]
+}
+
+function withMeta(db: DbShape): DbShape {
+  return {
+    users: db.users,
+    meta: {
+      savedAt: new Date().toISOString(),
+      userCount: db.users.length,
+    },
+  }
+}
+
+function ensureLocalDirs() {
+  if (!fs.existsSync(LOCAL_DIR)) fs.mkdirSync(LOCAL_DIR, { recursive: true })
+  if (!fs.existsSync(LOCAL_BACKUP_DIR)) fs.mkdirSync(LOCAL_BACKUP_DIR, { recursive: true })
+}
+
+function loadLocalFile(filePath: string): DbShape {
   try {
-    const result = await get(BLOB_PATH, { access: 'private', useCache: false })
-    if (!result || result.statusCode !== 200 || !result.stream) return empty()
-    const body = await new Response(result.stream).text()
-    if (!body) return empty()
-    const data = JSON.parse(body) as DbShape
-    if (!data || !Array.isArray(data.users)) return empty()
-    return data
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    if (/not found|404|BlobNotFound/i.test(msg)) return empty()
-    console.error('blob load failed', e)
+    if (!fs.existsSync(filePath)) return empty()
+    return parseDb(fs.readFileSync(filePath, 'utf8'))
+  } catch {
     return empty()
   }
 }
 
-async function saveBlob(db: DbShape) {
-  await put(BLOB_PATH, JSON.stringify(db), {
+function loadLocal(): DbShape {
+  ensureLocalDirs()
+  if (!fs.existsSync(LOCAL_FILE)) {
+    // Do NOT write empty on first missing file when we might still recover from blob/backups
+    return empty()
+  }
+  return loadLocalFile(LOCAL_FILE)
+}
+
+function listLocalBackupFiles(): string[] {
+  ensureLocalDirs()
+  try {
+    return fs
+      .readdirSync(LOCAL_BACKUP_DIR)
+      .filter((f) => f.startsWith('users-') && f.endsWith('.json'))
+      .sort()
+      .reverse()
+      .map((f) => path.join(LOCAL_BACKUP_DIR, f))
+  } catch {
+    return []
+  }
+}
+
+function loadRecentLocalBackups(limit = 5): DbShape[] {
+  return listLocalBackupFiles()
+    .slice(0, limit)
+    .map((f) => loadLocalFile(f))
+    .filter((d) => d.users.length > 0)
+}
+
+function rotateLocalBackup(db: DbShape) {
+  if (!db.users.length) return
+  ensureLocalDirs()
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const dest = path.join(LOCAL_BACKUP_DIR, `users-${stamp}.json`)
+  try {
+    fs.writeFileSync(dest, JSON.stringify(withMeta(db), null, 2), 'utf8')
+    const all = listLocalBackupFiles()
+    for (const old of all.slice(MAX_LOCAL_BACKUPS)) {
+      try {
+        fs.unlinkSync(old)
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch (e) {
+    console.error('local backup rotate failed', e)
+  }
+}
+
+function saveLocal(db: DbShape) {
+  ensureLocalDirs()
+  const payload = withMeta(db)
+  // Atomic-ish write: temp + rename
+  const tmp = `${LOCAL_FILE}.${process.pid}.tmp`
+  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), 'utf8')
+  fs.renameSync(tmp, LOCAL_FILE)
+}
+
+async function loadBlobPath(pathname: string): Promise<DbShape> {
+  try {
+    const result = await get(pathname, { access: 'private', useCache: false })
+    if (!result || result.statusCode !== 200 || !result.stream) return empty()
+    const body = await new Response(result.stream).text()
+    return parseDb(body)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (/not found|404|BlobNotFound/i.test(msg)) return empty()
+    lastBlobOk = false
+    lastBlobError = msg.slice(0, 200)
+    console.error('blob load failed', pathname, msg)
+    return empty()
+  }
+}
+
+async function putBlobPath(pathname: string, db: DbShape) {
+  await put(pathname, JSON.stringify(withMeta(db)), {
     access: 'private',
     contentType: 'application/json',
     addRandomSuffix: false,
@@ -127,20 +277,144 @@ async function saveBlob(db: DbShape) {
   })
 }
 
+/**
+ * Guard: never persist a catastrophic shrink (e.g. blob read failed → empty → save).
+ * Allows natural empty only when we never had users in this process and file was empty.
+ */
+function assertSafeToSave(db: DbShape) {
+  const n = db.users.length
+  if (peakUserCount > 0 && n === 0) {
+    throw new Error(
+      `USERS_SAVE_REFUSED_EMPTY: refusing to wipe ${peakUserCount} known account(s)`,
+    )
+  }
+  if (peakUserCount >= 4 && n < peakUserCount * MAX_SHRINK_RATIO) {
+    throw new Error(
+      `USERS_SAVE_REFUSED_SHRINK: ${peakUserCount} → ${n} accounts (possible data loss)`,
+    )
+  }
+}
+
 async function loadStore(): Promise<DbShape> {
   if (mem && Date.now() - memAt < CACHE_MS) return mem
-  const db = useBlob() ? await loadBlob() : loadLocal()
-  db.users = (db.users || []).map((u) => normalizeUser(u as UserRecord))
+
+  const sources: UserRecord[][] = []
+  let blobPrimaryEmpty = true
+  let blobReadFailed = false
+
+  if (useBlob()) {
+    const primary = await loadBlobPath(BLOB_PATH)
+    if (primary.users.length) {
+      sources.push(primary.users)
+      blobPrimaryEmpty = false
+      lastBlobOk = true
+      lastBlobError = ''
+    } else if (lastBlobError) {
+      blobReadFailed = true
+    }
+
+    const backup = await loadBlobPath(BLOB_BACKUP_PATH)
+    if (backup.users.length) sources.push(backup.users)
+  }
+
+  const local = loadLocal()
+  if (local.users.length) sources.push(local.users)
+
+  for (const b of loadRecentLocalBackups(5)) {
+    sources.push(b.users)
+  }
+
+  const mergedUsers = mergeUserLists(sources)
+  const db: DbShape = { users: mergedUsers }
+
+  if (mergedUsers.length > peakUserCount) peakUserCount = mergedUsers.length
+
   mem = db
   memAt = Date.now()
+
+  // Heal: if we recovered accounts locally but primary blob is empty/unreadable,
+  // re-publish so the next cold start on another instance sees them.
+  if (
+    useBlob() &&
+    mergedUsers.length > 0 &&
+    (blobPrimaryEmpty || blobReadFailed) &&
+    !healInFlight
+  ) {
+    healInFlight = true
+    void (async () => {
+      try {
+        await putBlobPath(BLOB_PATH, db)
+        await putBlobPath(BLOB_BACKUP_PATH, db)
+        lastBlobOk = true
+        lastBlobError = ''
+        console.info('users store healed to blob (%d accounts)', mergedUsers.length)
+      } catch (e) {
+        lastBlobOk = false
+        lastBlobError = e instanceof Error ? e.message.slice(0, 200) : String(e)
+        console.error('users blob heal failed', lastBlobError)
+      } finally {
+        healInFlight = false
+      }
+    })()
+  }
+
   return db
 }
 
 async function saveStore(db: DbShape) {
-  mem = db
+  // Re-read every durable source and merge BEFORE writing.
+  // Critical on Vercel serverless: a cold start that saw "empty" must not
+  // clobber a fuller blob/local when registering a new user.
+  const sources: UserRecord[][] = [db.users]
+  sources.push(loadLocal().users)
+  for (const b of loadRecentLocalBackups(5)) sources.push(b.users)
+
+  if (useBlob()) {
+    const remote = await loadBlobPath(BLOB_PATH)
+    const remoteBak = await loadBlobPath(BLOB_BACKUP_PATH)
+    if (remote.users.length) sources.push(remote.users)
+    if (remoteBak.users.length) sources.push(remoteBak.users)
+  }
+
+  const snapshot: DbShape = {
+    users: mergeUserLists(sources).map((u) => normalizeUser(u)),
+  }
+
+  if (snapshot.users.length > peakUserCount) peakUserCount = snapshot.users.length
+  assertSafeToSave(snapshot)
+
+  // 1) Local rotating backup of previous main file
+  const previous = loadLocal()
+  if (previous.users.length) rotateLocalBackup(previous)
+
+  // 2) Always write local first (survives blob outages on long-running hosts)
+  saveLocal(snapshot)
+  rotateLocalBackup(snapshot)
+
+  // 3) Dual-write to blob primary + backup when configured
+  if (useBlob()) {
+    try {
+      await putBlobPath(BLOB_PATH, snapshot)
+      await putBlobPath(BLOB_BACKUP_PATH, snapshot)
+      lastBlobOk = true
+      lastBlobError = ''
+    } catch (e) {
+      lastBlobOk = false
+      lastBlobError = e instanceof Error ? e.message.slice(0, 200) : String(e)
+      console.error(
+        'blob save failed — local users.json kept (%d accounts)',
+        snapshot.users.length,
+        lastBlobError,
+      )
+      // Do not throw: registration/login must succeed if local persisted.
+    }
+  }
+
+  mem = snapshot
+  // keep caller's in-memory db array in sync if they hold the same reference
+  db.users = snapshot.users
   memAt = Date.now()
-  if (useBlob()) await saveBlob(db)
-  else saveLocal(db)
+  lastSaveAt = new Date().toISOString()
 }
 
 function token(): string {
@@ -399,6 +673,32 @@ export async function listLeaderboard(limit = 20): Promise<PublicUser[]> {
     .map(publicUser)
 }
 
-export function storageMode(): 'blob' | 'local' {
-  return useBlob() ? 'blob' : 'local'
+export function storageMode(): 'blob' | 'local' | 'dual' {
+  return useBlob() ? 'dual' : 'local'
+}
+
+export type UsersStorageHealth = {
+  mode: 'blob' | 'local' | 'dual'
+  userCount: number
+  peakUserCount: number
+  blobConfigured: boolean
+  blobOk: boolean
+  blobError: string
+  lastSaveAt: string
+  localBackupCount: number
+}
+
+/** Non-secret health for /api/health — proves accounts are still on disk. */
+export async function usersStorageHealth(): Promise<UsersStorageHealth> {
+  const db = await loadStore()
+  return {
+    mode: storageMode(),
+    userCount: db.users.length,
+    peakUserCount,
+    blobConfigured: useBlob(),
+    blobOk: useBlob() ? lastBlobOk : true,
+    blobError: lastBlobError,
+    lastSaveAt,
+    localBackupCount: listLocalBackupFiles().length,
+  }
 }
